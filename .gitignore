@@ -7,3 +7,12 @@ __pycache__/
 htmlcov/
 *.jsonl
 outputs/
+.omx/
+_push_mt4_*/
+autosolver/
+examples/
+scripts/
+tests/
+official_solver.py
+submission.py
+README.md
