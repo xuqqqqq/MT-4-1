@@ -119,6 +119,8 @@ def choose_model_penalty(problem):
         and (avg_p < 0.09 or 0.13 < avg_p < 0.18)
     ):
         return 85.0
+    if 25 <= problem.n_tasks <= 32 and courier_count >= int(problem.n_tasks * 2.2) and avg_p >= 0.40:
+        return 90.0
     if problem.n_tasks >= 25 and courier_count >= int(problem.n_tasks * 1.8) and 0.09 <= avg_p <= 0.13:
         return 80.0
     if problem.n_tasks > 32 and courier_count >= int(problem.n_tasks * 1.5) and avg_p >= 0.40:
