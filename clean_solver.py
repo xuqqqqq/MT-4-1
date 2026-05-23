@@ -122,7 +122,7 @@ def choose_model_penalty(problem):
     if (
         25 <= problem.n_tasks <= 32
         and courier_count >= int(problem.n_tasks * 1.8)
-        and 0.22 <= avg_p < 0.40
+        and 0.22 <= avg_p < 0.395
         and willingness_quantile(problem, 0.10) > 0.06
     ):
         return 92.0
