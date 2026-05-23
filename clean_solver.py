@@ -119,6 +119,13 @@ def choose_model_penalty(problem):
         and (avg_p < 0.09 or 0.13 < avg_p < 0.18)
     ):
         return 85.0
+    if (
+        25 <= problem.n_tasks <= 32
+        and courier_count >= int(problem.n_tasks * 1.8)
+        and 0.22 <= avg_p < 0.40
+        and willingness_quantile(problem, 0.10) > 0.06
+    ):
+        return 90.0
     if 25 <= problem.n_tasks <= 32 and courier_count >= int(problem.n_tasks * 2.2) and avg_p >= 0.40:
         return 90.0
     if problem.n_tasks >= 25 and courier_count >= int(problem.n_tasks * 1.8) and 0.09 <= avg_p <= 0.13:
@@ -597,6 +604,18 @@ def state_expected_accept(state):
 
 def average_willingness(problem):
     return problem.avg_willingness
+
+
+def willingness_quantile(problem, fraction):
+    values = []
+    for candidates in problem.by_mask.values():
+        for candidate in candidates:
+            values.append(candidate.p)
+    if not values:
+        return 0.0
+    values.sort()
+    index = int((len(values) - 1) * fraction)
+    return values[index]
 
 
 def all_single_grouping(problem):
