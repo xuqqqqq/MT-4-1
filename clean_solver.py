@@ -158,7 +158,20 @@ def _solve_problem(problem, input_text, deadline):
             best_value = value
             best_state = state
 
+    def consider_state(state):
+        nonlocal best_state, best_value
+        if expired(deadline) or not state:
+            return
+        state = normalize_state(state)
+        value = evaluate_state(problem, state)
+        if value + EPS < best_value:
+            best_value = value
+            best_state = state
+
     consider(all_single_grouping(problem))
+
+    if problem.n_tasks <= 6 and len(problem.all_couriers) <= 12 and time.perf_counter() < deadline - 0.70:
+        consider_state(make_candidate_cover_state(problem, min(deadline, time.perf_counter() + 0.62)))
 
     seed_thresholds = (-120.0, -80.0, -40.0, -15.0, 0.0, 8.0, 20.0, 40.0)
     for mode in ("pair_gain", "pair_raw", "pair_half"):
@@ -677,6 +690,76 @@ def greedy_pair_cover(problem, edges, threshold):
             groups.append(mask)
             used |= mask
     return tuple(sorted(groups))
+
+
+def make_candidate_cover_state(problem, deadline):
+    items = []
+    for mask, candidates in problem.by_mask.items():
+        task_count = bit_count(mask)
+        if task_count > 2:
+            continue
+        for candidate in candidates:
+            value = single_offer_value_raw(candidate)
+            saving = FAIL_PENALTY * task_count - value
+            key = (saving, task_count, candidate.p, -candidate.score)
+            items.append((key, candidate.mask, candidate.courier, candidate))
+    items.sort(reverse=True)
+
+    used_tasks = 0
+    used_couriers = set()
+    state = []
+    for _, _, _, candidate in items:
+        if used_tasks & candidate.mask:
+            continue
+        if candidate.courier in used_couriers:
+            continue
+        state.append([candidate])
+        used_tasks |= candidate.mask
+        used_couriers.add(candidate.courier)
+        if used_tasks == problem.all_task_mask:
+            break
+
+    for index in range(problem.n_tasks):
+        mask = 1 << index
+        if used_tasks & mask:
+            continue
+        best = None
+        for candidate in problem.by_mask.get(mask, ()):
+            if candidate.courier in used_couriers:
+                continue
+            value = single_offer_value_raw(candidate)
+            if best is None or value < best[0]:
+                best = (value, candidate)
+        if best is not None:
+            candidate = best[1]
+            state.append([candidate])
+            used_tasks |= candidate.mask
+            used_couriers.add(candidate.courier)
+
+    if not state:
+        return []
+
+    groups = tuple(offers[0].mask for offers in state)
+    if time.perf_counter() < deadline:
+        add_best_marginal_offers(
+            problem,
+            groups,
+            state,
+            used_couriers,
+            set(problem.all_couriers),
+            min(deadline, time.perf_counter() + 0.30),
+        )
+    if time.perf_counter() < deadline:
+        state = improve_fixed_groups(problem, state, min(deadline, time.perf_counter() + 0.18))
+    value = evaluate_state(problem, state)
+    if time.perf_counter() < deadline:
+        state, value = local_repartition(
+            problem,
+            state,
+            value,
+            min(deadline, time.perf_counter() + 0.45),
+        )
+    return normalize_state(state)
 
 
 def greedy_assignment(problem, groups, deadline, ensure_initial=True, allowed_couriers=None):
