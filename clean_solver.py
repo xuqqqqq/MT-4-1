@@ -322,6 +322,18 @@ def _solve_problem(problem, input_text, deadline):
         globals()["FAIL_PENALTY"] = 100.0
         best_value = evaluate_state(problem, best_state)
 
+    if (
+        problem.n_tasks >= 25
+        and len(best_state) >= 3
+        and sum(len(offers) for offers in best_state) >= problem.n_tasks + 8
+        and time.perf_counter() < deadline - 0.06
+    ):
+        trial = chain_reassign_used_couriers(problem, best_state, deadline - 0.03)
+        value = evaluate_state(problem, trial)
+        if value + EPS < best_value:
+            best_state = trial
+            best_value = value
+
     result = state_to_output(best_state)
     return result if result else fallback_greedy(input_text)
 
@@ -899,7 +911,8 @@ def reassign_used_couriers(problem, state, deadline):
     if len(state) <= 1:
         return state
 
-    values = [group_value(offers, offers[0].task_count) for offers in state]
+    task_counts = [offers[0].task_count for offers in state]
+    values = [group_value(offers, task_counts[index]) for index, offers in enumerate(state)]
 
     while time.perf_counter() < deadline:
         best = None
@@ -978,7 +991,7 @@ def reassign_used_couriers(problem, state, deadline):
             state[second_index].append(moved)
             values[first_index] = group_value(state[first_index], state[first_index][0].task_count)
             values[second_index] = group_value(state[second_index], state[second_index][0].task_count)
-        else:
+        elif kind == "swap":
             left_candidate = state[first_index][first_offer_index]
             right_candidate = state[second_index][second_offer_index]
             left_mask = state[first_index][0].mask
@@ -987,6 +1000,82 @@ def reassign_used_couriers(problem, state, deadline):
             state[second_index][second_offer_index] = problem.by_mask_courier[right_mask][left_candidate.courier]
             values[first_index] = group_value(state[first_index], state[first_index][0].task_count)
             values[second_index] = group_value(state[second_index], state[second_index][0].task_count)
+
+    return normalize_state(state)
+
+
+def chain_reassign_used_couriers(problem, state, deadline):
+    """Try a two-hop used-courier move across three fixed groups."""
+
+    state = normalize_state([list(offers) for offers in state if offers])
+    if len(state) < 3:
+        return state
+
+    while time.perf_counter() < deadline:
+        compat = [problem.by_mask_courier.get(offers[0].mask, {}) for offers in state]
+        task_counts = [offers[0].task_count for offers in state]
+        values = [group_value(offers, task_counts[index]) for index, offers in enumerate(state)]
+        best = None
+        now = time.perf_counter
+
+        for source_index, source in enumerate(state):
+            if now() >= deadline:
+                break
+            if len(source) <= 1:
+                continue
+            source_value = values[source_index]
+            for source_offer_index, first_candidate in enumerate(source):
+                source_without = source[:source_offer_index] + source[source_offer_index + 1 :]
+                source_delta = group_value(source_without, task_counts[source_index]) - source_value
+                for middle_index, middle in enumerate(state):
+                    if middle_index == source_index:
+                        continue
+                    first_to_middle = compat[middle_index].get(first_candidate.courier)
+                    if first_to_middle is None:
+                        continue
+                    middle_value = values[middle_index]
+                    for middle_offer_index, second_candidate in enumerate(middle):
+                        middle_after = list(middle)
+                        middle_after[middle_offer_index] = first_to_middle
+                        partial_delta = (
+                            source_delta
+                            + group_value(middle_after, task_counts[middle_index])
+                            - middle_value
+                        )
+                        for target_index, target in enumerate(state):
+                            if target_index == source_index or target_index == middle_index:
+                                continue
+                            second_to_target = compat[target_index].get(second_candidate.courier)
+                            if second_to_target is None:
+                                continue
+                            delta = (
+                                partial_delta
+                                + group_value(target + [second_to_target], task_counts[target_index])
+                                - values[target_index]
+                            )
+                            if delta < -EPS and (best is None or delta < best[0]):
+                                best = (
+                                    delta,
+                                    source_index,
+                                    middle_index,
+                                    source_offer_index,
+                                    middle_offer_index,
+                                    target_index,
+                                )
+                if now() >= deadline:
+                    break
+
+        if best is None:
+            break
+
+        _, source_index, middle_index, source_offer_index, middle_offer_index, target_index = best
+        first_candidate = state[source_index][source_offer_index]
+        second_candidate = state[middle_index][middle_offer_index]
+        state[middle_index][middle_offer_index] = problem.by_mask_courier[state[middle_index][0].mask][
+            first_candidate.courier
+        ]
+        state[target_index].append(problem.by_mask_courier[state[target_index][0].mask][second_candidate.courier])
+        del state[source_index][source_offer_index]
 
     return normalize_state(state)
 
