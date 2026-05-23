@@ -16,7 +16,7 @@ from collections import defaultdict
 
 
 FAIL_PENALTY = 100.0
-DEFAULT_TIME_LIMIT = 9.45
+DEFAULT_TIME_LIMIT = 9.35
 EPS = 1e-10
 INF = 1e100
 
