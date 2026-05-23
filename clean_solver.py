@@ -268,7 +268,7 @@ def _solve_problem(problem, input_text, deadline):
             problem,
             best_state,
             best_value,
-            min(deadline - 0.05, time.perf_counter() + 0.90),
+            min(deadline - 0.05, time.perf_counter() + 0.35),
             dense_seed,
         )
 
