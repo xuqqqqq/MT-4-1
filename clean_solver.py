@@ -1783,16 +1783,9 @@ def best_repartition_for_subset(problem, state, subset, deadline):
 
 def should_polish_local_repartition(problem):
     return (
-        (
-            25 <= problem.n_tasks <= 32
-            and abs(FAIL_PENALTY - 100.0) <= EPS
-            and problem.avg_willingness < 0.40
-        )
-        or (
-            problem.n_tasks <= 15
-            and len(problem.all_couriers) <= 30
-            and sum(len(candidates) for candidates in problem.by_mask.values()) >= 1850
-        )
+        25 <= problem.n_tasks <= 32
+        and abs(FAIL_PENALTY - 100.0) <= EPS
+        and problem.avg_willingness < 0.40
     )
 
 
