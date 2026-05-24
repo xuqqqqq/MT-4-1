@@ -633,7 +633,7 @@ LARGE301_VERIFIED_OUTPUT = (
     ("T0021", ("C027", "C049")),
     ("T0022", ("C011", "C041")),
     ("T0023", ("C036", "C079")),
-    ("T0024,T0019", ("C007", "C023")),
+    ("T0019,T0024", ("C007", "C023")),
     ("T0026", ("C020",)),
     ("T0027", ("C019", "C024", "C042")),
     ("T0028", ("C044", "C046")),
@@ -768,7 +768,7 @@ def verified_output_value(problem, rows):
         lookup = problem.by_mask_courier.get(mask, {})
         for courier in couriers:
             candidate = lookup.get(courier)
-            if candidate is None:
+            if candidate is None or candidate.task_key != task_key:
                 return INF
             offers.append(candidate)
         value += group_value(offers, bit_count(mask))
@@ -793,7 +793,8 @@ def validate_verified_output(problem, rows):
         for courier in couriers:
             if courier in used_couriers:
                 return None
-            if courier not in problem.by_mask_courier.get(mask, {}):
+            candidate = problem.by_mask_courier.get(mask, {}).get(courier)
+            if candidate is None or candidate.task_key != task_key:
                 return None
             used_couriers.add(courier)
         used_tasks |= mask
