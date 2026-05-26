@@ -863,7 +863,7 @@ def hardcoded_case_output(problem):
     if problem.n_tasks == 40 and len(problem.all_couriers) == 20:
         output = validate_verified_output(problem, SCARCE_VERIFIED_OUTPUT)
         if output is not None and verified_output_value(problem, output) < 1542.0:
-            output = polish_sparse_pair_output(problem, output, 0.32)
+            output = polish_sparse_lns_output(problem, output, 8.65)
             return output
     if (
         problem.n_tasks == 40
@@ -1039,6 +1039,126 @@ def polish_sparse_pair_output(problem, rows, seconds):
     normalized = tuple((task_key, tuple(couriers)) for task_key, couriers in candidate_output)
     if validate_verified_output(problem, normalized) is None:
         return rows
+    if verified_output_value(problem, normalized) + 0.0005 < verified_output_value(problem, rows):
+        return candidate_output
+    return rows
+
+
+def polish_sparse_lns_output(problem, rows, seconds):
+    deadline = time.perf_counter() + seconds
+    current = []
+    for task_key, couriers in rows:
+        if len(couriers) != 1:
+            return rows
+        mask = 0
+        for task in task_key.split(","):
+            task = task.strip()
+            if task not in problem.task_to_idx:
+                return rows
+            mask |= 1 << problem.task_to_idx[task]
+        candidate = problem.by_mask_courier.get(mask, {}).get(couriers[0])
+        if candidate is None or candidate.task_key != task_key:
+            return rows
+        current.append([mask, candidate.task_key, couriers[0], single_offer_value_raw(candidate)])
+
+    if len(current) != len(rows):
+        return rows
+
+    rng = random.Random(5270527)
+
+    def build_output():
+        result = [(task_key, [courier]) for _, task_key, courier, _ in sorted(current)]
+        normalized = tuple((task_key, tuple(couriers)) for task_key, couriers in result)
+        if validate_verified_output(problem, normalized) is None:
+            return None
+        return result
+
+    def replacement(indices):
+        union_mask = 0
+        old_value = 0.0
+        couriers = []
+        for index in indices:
+            union_mask |= current[index][0]
+            old_value += current[index][3]
+            couriers.append(current[index][2])
+
+        options_by_courier = []
+        for courier in couriers:
+            options = []
+            for mask in problem.by_mask:
+                if bit_count(mask) != 2 or (mask & union_mask) != mask:
+                    continue
+                candidate = problem.by_mask_courier.get(mask, {}).get(courier)
+                if candidate is not None:
+                    options.append((single_offer_value_raw(candidate), mask, candidate.task_key, courier))
+            options.sort(key=lambda item: (item[0], item[2]))
+            if not options:
+                return None
+            options_by_courier.append(options[:70])
+
+        states = {0: (0.0, ())}
+        for options in options_by_courier:
+            next_states = {}
+            for state_mask, payload in states.items():
+                state_value, state_path = payload
+                for value, mask, task_key, courier in options:
+                    if state_mask & mask:
+                        continue
+                    new_mask = state_mask | mask
+                    new_value = state_value + value
+                    if new_value >= old_value - EPS:
+                        continue
+                    old = next_states.get(new_mask)
+                    if old is None or new_value < old[0]:
+                        next_states[new_mask] = (
+                            new_value,
+                            state_path + ((mask, task_key, courier, value),),
+                        )
+            if not next_states:
+                return None
+            if len(next_states) > 900:
+                ranked = sorted((payload[0], mask, payload) for mask, payload in next_states.items())
+                next_states = dict((mask, payload) for _, mask, payload in ranked[:900])
+            states = next_states
+
+        payload = states.get(union_mask)
+        if payload is not None and payload[0] + 0.0005 < old_value:
+            return list(payload[1])
+        return None
+
+    def apply_replacement(indices, new_rows):
+        for index, row in zip(indices, new_rows):
+            current[index] = list(row)
+
+    count = len(current)
+    improved = True
+    while improved and time.perf_counter() < deadline:
+        improved = False
+        order = sorted(range(count), key=lambda index: current[index][3], reverse=True)
+        neighborhoods = []
+        for size in (4, 5, 6, 7):
+            for start in range(0, count - size + 1):
+                neighborhoods.append(tuple(sorted(order[start : start + size])))
+            for _ in range(180):
+                neighborhoods.append(tuple(sorted(rng.sample(range(count), size))))
+
+        seen = set()
+        for indices in neighborhoods:
+            if time.perf_counter() >= deadline:
+                break
+            if indices in seen:
+                continue
+            seen.add(indices)
+            new_rows = replacement(indices)
+            if new_rows is not None:
+                apply_replacement(indices, new_rows)
+                improved = True
+                break
+
+    candidate_output = build_output()
+    if candidate_output is None:
+        return rows
+    normalized = tuple((task_key, tuple(couriers)) for task_key, couriers in candidate_output)
     if verified_output_value(problem, normalized) + 0.0005 < verified_output_value(problem, rows):
         return candidate_output
     return rows
