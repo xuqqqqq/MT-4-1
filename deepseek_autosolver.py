@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -85,6 +86,71 @@ def write_file(path: Path, content: str):
         f.write(content)
 
 
+def read_text_arg(value):
+    if not value:
+        return ""
+    path = Path(value)
+    if path.exists() and path.is_file():
+        return read_file(path)
+    return value
+
+
+def summarize_tsv_case(path_value, max_lines=80):
+    path = Path(path_value)
+    text = read_file(path)
+    lines = text.splitlines()
+    header = lines[0] if lines else ""
+    tasks = set()
+    couriers = set()
+    groups = set()
+    willingness_sum = 0.0
+    willingness_count = 0
+    scores = []
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        group, courier, score_str, willingness_str = parts[:4]
+        groups.add(group)
+        couriers.add(courier)
+        for task_id in group.split(","):
+            task_id = task_id.strip()
+            if task_id:
+                tasks.add(task_id)
+        try:
+            scores.append(float(score_str))
+            willingness_sum += float(willingness_str)
+            willingness_count += 1
+        except ValueError:
+            pass
+    preview_lines = lines[:max_lines]
+    avg_willingness = 0.0
+    if willingness_count:
+        avg_willingness = willingness_sum / willingness_count
+    return {
+        "path": str(path),
+        "header": header,
+        "rows": max(0, len(lines) - 1),
+        "tasks": len(tasks),
+        "couriers": len(couriers),
+        "task_groups": len(groups),
+        "avg_willingness": avg_willingness,
+        "min_score": min(scores) if scores else None,
+        "max_score": max(scores) if scores else None,
+        "preview": "\n".join(preview_lines),
+    }
+
+
+def hardcode_literal_count(code):
+    task_hits = re.findall(r"['\"]T\d{3,}['\"]", code)
+    courier_hits = re.findall(r"['\"]C\d{3,}['\"]", code)
+    return len(task_hits) + len(courier_hits)
+
+
+def looks_case_hardcoded(code):
+    return hardcode_literal_count(code) > 12
+
+
 def strip_code_fences(text):
     # If text contains fenced code blocks, return the largest python/plain block.
     # If no fence exists, remove leading/trailing whitespace and append newline.
@@ -102,6 +168,7 @@ def strip_code_fences(text):
                 fences.append((i, j, lang))
                 i = j + 1
             else:
+                fences.append((i, len(lines), lang))
                 i += 1
         else:
             i += 1
@@ -427,6 +494,7 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 def build_generation_prompt(
     problem_info: str = "",
+    baseline_solver: str = "",
     seed_solver: str = "",
     local_cases: List[Dict] = None,
     previous_feedback: str = "",
@@ -439,8 +507,19 @@ def build_generation_prompt(
         "Each item must be a tuple/list `(task_id_list_string, courier_id_list)`.",
         "task_id_list_string must match an exact input TSV task_id_list value (e.g. 'T0000' or 'T0024,T0019').",
         "courier_id_list is a list/tuple of one or more courier IDs offered for that exact task group.",
+        "The input is TSV with columns: task_id_list, courier_id, total_score, willingness.",
+        "The official baseline below is authoritative for parsing and return format, but you should improve it.",
         "Use only Python 3.6 standard library. No external packages.",
         "Do not use dataclasses, walrus operator, or match/case statements.",
+        "Hard line budget: the complete solver must be under 260 physical lines.",
+        "Any solution that is truncated, unfinished, or over 260 lines is invalid.",
+        "The solver must be a general algorithm for arbitrary TSV input, not a case-specific answer.",
+        "Do not hardcode task IDs, courier IDs, literal assignment tables, or any rows copied from examples.",
+        "If the code contains many literals like T0001 or C0001, it is invalid.",
+        "Prefer a compact heuristic: parse rows, build bundle/courier candidates, greedy assignment, then add a few extra courier offers.",
+        "Do not implement large class frameworks, long multi-opt local search, or thousands of lines of copied code.",
+        "Do not copy a long seed solver verbatim. Use the official baseline for I/O and the seed as strategy inspiration.",
+        "The returned code must be syntactically complete; do not stop mid-function.",
         "Output ONLY the raw Python code, no explanations or markdown.",
         "",
     ]
@@ -451,17 +530,33 @@ def build_generation_prompt(
         prompt_parts.append("")
 
     if seed_solver:
-        prompt_parts.append("=== SEED SOLVER EXCERPT ===")
+        prompt_parts.append("=== CURRENT STRONG SEED SOLVER ===")
         prompt_parts.append(seed_solver)
         prompt_parts.append("")
 
+    if baseline_solver:
+        prompt_parts.append("=== OFFICIAL BASELINE SOLVER ===")
+        prompt_parts.append(baseline_solver)
+        prompt_parts.append("")
+
     if local_cases:
-        prompt_parts.append("=== LOCAL EVALUATION CASES ===")
+        prompt_parts.append("=== OFFICIAL / LOCAL CASES ===")
         for i, case in enumerate(local_cases):
             prompt_parts.append("Case {}:".format(i+1))
-            prompt_parts.append("  Input TSV: {}".format(case.get('tsv_preview', 'N/A')))
+            prompt_parts.append("  Path: {}".format(case.get('path', 'N/A')))
+            prompt_parts.append("  Header: {}".format(case.get('header', 'N/A')))
+            prompt_parts.append("  Rows: {}, tasks: {}, couriers: {}, task groups: {}".format(
+                case.get('rows', 'N/A'),
+                case.get('tasks', 'N/A'),
+                case.get('couriers', 'N/A'),
+                case.get('task_groups', 'N/A')))
+            prompt_parts.append("  Avg willingness: {}".format(case.get('avg_willingness', 'N/A')))
+            prompt_parts.append("  Score range: {} .. {}".format(case.get('min_score', 'N/A'), case.get('max_score', 'N/A')))
+            prompt_parts.append("  Original TSV preview:")
+            prompt_parts.append(case.get('preview', 'N/A'))
             prompt_parts.append("  Expected cost: {}".format(case.get('expected_cost', 'N/A')))
             prompt_parts.append("  Your last cost: {}".format(case.get('last_cost', 'N/A')))
+            prompt_parts.append("")
         prompt_parts.append("")
 
     if previous_feedback:
@@ -549,13 +644,24 @@ def cmd_generate(args):
     state = load_state()
 
     # Build prompt
-    problem_info = args.problem_info or state.get("problem_info", "")
-    seed_solver = args.seed_solver or state.get("seed_solver", "")
+    has_explicit_context = bool(args.problem_info or args.baseline_solver or args.seed_solver or args.case_file)
+    problem_info_arg = args.problem_info if args.problem_info else ("" if has_explicit_context else state.get("problem_info", ""))
+    baseline_solver_arg = args.baseline_solver if args.baseline_solver else ("" if has_explicit_context else state.get("baseline_solver", ""))
+    seed_solver_arg = args.seed_solver if args.seed_solver else ("" if has_explicit_context else state.get("seed_solver", ""))
+    problem_info = read_text_arg(problem_info_arg)
+    seed_solver = read_text_arg(seed_solver_arg)
+    baseline_solver = read_text_arg(baseline_solver_arg)
     local_cases = state.get("local_cases", [])
+    case_files = args.case_file or ([] if has_explicit_context else state.get("case_files", []))
+    if case_files:
+        local_cases = []
+        for case_file in case_files:
+            local_cases.append(summarize_tsv_case(case_file, max_lines=args.case_lines))
     previous_feedback = state.get("last_feedback", "")
 
     prompt = build_generation_prompt(
         problem_info=problem_info,
+        baseline_solver=baseline_solver,
         seed_solver=seed_solver,
         local_cases=local_cases,
         previous_feedback=previous_feedback,
@@ -565,6 +671,14 @@ def cmd_generate(args):
     try:
         code = call_deepseek(prompt, max_tokens=args.max_tokens)
         code = strip_code_fences(code)
+        if looks_case_hardcoded(code):
+            logger.error("Generated solver appears case-hardcoded; rejecting without saving")
+            append_log({
+                "event": "reject_hardcoded_generate",
+                "timestamp": int(time.time()),
+                "literal_count": hardcode_literal_count(code),
+            })
+            return
     except Exception as e:
         logger.error("Generation failed: {}".format(e))
         return
@@ -578,6 +692,14 @@ def cmd_generate(args):
     # Update state
     state["last_candidate"] = str(candidate_file)
     state["last_candidate_code"] = code
+    if args.problem_info:
+        state["problem_info"] = args.problem_info
+    if args.seed_solver:
+        state["seed_solver"] = args.seed_solver
+    if args.baseline_solver:
+        state["baseline_solver"] = args.baseline_solver
+    if args.case_file:
+        state["case_files"] = args.case_file
     state["generation_count"] = state.get("generation_count", 0) + 1
     save_state(state)
 
@@ -740,8 +862,12 @@ def cmd_loop(args):
     # Set defaults from args
     if args.problem_info:
         state["problem_info"] = args.problem_info
+    if args.baseline_solver:
+        state["baseline_solver"] = args.baseline_solver
     if args.seed_solver:
         state["seed_solver"] = args.seed_solver
+    if args.case_file:
+        state["case_files"] = args.case_file
     if args.tsv_file:
         state["tsv_file"] = args.tsv_file
     save_state(state)
@@ -760,14 +886,24 @@ def cmd_loop(args):
         # Generate
         logger.info("Generating new candidate...")
         prompt = build_generation_prompt(
-            problem_info=state.get("problem_info", ""),
-            seed_solver=state.get("seed_solver", ""),
-            local_cases=state.get("local_cases", []),
+            problem_info=read_text_arg(state.get("problem_info", "")),
+            baseline_solver=read_text_arg(state.get("baseline_solver", "")),
+            seed_solver=read_text_arg(state.get("seed_solver", "")),
+            local_cases=[summarize_tsv_case(path, max_lines=args.case_lines) for path in state.get("case_files", [])] or state.get("local_cases", []),
             previous_feedback=state.get("last_feedback", ""),
         )
         try:
             code = call_deepseek(prompt, max_tokens=args.max_tokens)
             code = strip_code_fences(code)
+            if looks_case_hardcoded(code):
+                logger.warning("Generated solver appears case-hardcoded; skipping iteration")
+                append_log({
+                    "event": "reject_hardcoded_loop",
+                    "iteration": iteration,
+                    "timestamp": int(time.time()),
+                    "literal_count": hardcode_literal_count(code),
+                })
+                continue
         except Exception as e:
             logger.error("Generation failed: {}".format(e))
             continue
@@ -866,12 +1002,15 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--max-tokens", type=int, default=4096, help="Max tokens for DeepSeek")
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     # Generate
     gen_parser = subparsers.add_parser("generate", help="Generate a new candidate solver")
     gen_parser.add_argument("--problem-info", help="Problem description")
+    gen_parser.add_argument("--baseline-solver", help="Official baseline solver code")
     gen_parser.add_argument("--seed-solver", help="Seed solver code excerpt")
+    gen_parser.add_argument("--case-file", action="append", help="Official/local TSV case file; may be repeated")
+    gen_parser.add_argument("--case-lines", type=int, default=80, help="Preview lines per case sent to DeepSeek")
 
     # Evaluate
     eval_parser = subparsers.add_parser("evaluate", help="Evaluate a candidate solver")
@@ -892,7 +1031,10 @@ def main():
     loop_parser = subparsers.add_parser("loop", help="Run generation-evaluation-submission loop")
     loop_parser.add_argument("--tsv-file", help="Path to TSV input file")
     loop_parser.add_argument("--problem-info", help="Problem description")
+    loop_parser.add_argument("--baseline-solver", help="Official baseline solver code")
     loop_parser.add_argument("--seed-solver", help="Seed solver code excerpt")
+    loop_parser.add_argument("--case-file", action="append", help="Official/local TSV case file; may be repeated")
+    loop_parser.add_argument("--case-lines", type=int, default=80, help="Preview lines per case sent to DeepSeek")
     loop_parser.add_argument("--max-iterations", type=int, default=10, help="Maximum iterations")
     loop_parser.add_argument("--target-cost", type=float, help="Stop when cost <= target")
     loop_parser.add_argument("--auto-submit", action="store_true", help="Auto-submit each iteration")
@@ -904,6 +1046,10 @@ def main():
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+
+    if not args.command:
+        parser.print_help()
+        return
 
     # Dispatch
     if args.command == "generate":
