@@ -846,6 +846,112 @@ def solve(input_text: str) -> list:
                     if found:
                         return
 
+    def final_top20_triple_4c(result, assigned_couriers, start_time, time_limit=9.5):
+        n = len(result)
+        groups_info = []
+        for idx in range(n):
+            group, couriers = result[idx]
+            if len(group.split(",")) == 1 and 1 <= len(couriers) <= 4:
+                cands = group_to_candidates[group]
+                selected = [(s, cid, w) for s, cid, w in cands if cid in couriers]
+                pen = expected_penalty(selected)
+                groups_info.append((pen, idx, group, couriers))
+        if len(groups_info) < 3:
+            return
+        groups_info.sort(key=lambda x: x[0], reverse=True)
+        top20 = groups_info[:20]
+        if len(top20) < 3:
+            return
+        for a in range(len(top20)):
+            for b in range(a + 1, len(top20)):
+                for c in range(b + 1, len(top20)):
+                    if time.time() - start_time > time_limit:
+                        return
+                    idx_a = top20[a][1]
+                    idx_b = top20[b][1]
+                    idx_c = top20[c][1]
+                    group_a = result[idx_a][0]
+                    group_b = result[idx_b][0]
+                    group_c = result[idx_c][0]
+                    couriers_a = result[idx_a][1]
+                    couriers_b = result[idx_b][1]
+                    couriers_c = result[idx_c][1]
+                    pool = list(set(couriers_a + couriers_b + couriers_c))
+                    if len(pool) > 7:
+                        continue
+                    cands_a = group_to_candidates[group_a]
+                    cands_b = group_to_candidates[group_b]
+                    cands_c = group_to_candidates[group_c]
+
+                    old_selected_a = [(s, cid, w) for s, cid, w in cands_a if cid in couriers_a]
+                    old_selected_b = [(s, cid, w) for s, cid, w in cands_b if cid in couriers_b]
+                    old_selected_c = [(s, cid, w) for s, cid, w in cands_c if cid in couriers_c]
+                    old_pen = expected_penalty(old_selected_a) + expected_penalty(old_selected_b) + expected_penalty(old_selected_c)
+
+                    subsets_a = []
+                    for r in range(1, min(5, len(pool) + 1)):
+                        for subset in combinations(pool, r):
+                            subset_set = set(subset)
+                            selected = [(s, cid, w) for s, cid, w in cands_a if cid in subset_set]
+                            if len(selected) == r:
+                                pen = expected_penalty(selected)
+                                subsets_a.append((list(subset), pen))
+                    subsets_a.sort(key=lambda x: x[1])
+                    subsets_a = subsets_a[:12]
+
+                    subsets_b = []
+                    for r in range(1, min(5, len(pool) + 1)):
+                        for subset in combinations(pool, r):
+                            subset_set = set(subset)
+                            selected = [(s, cid, w) for s, cid, w in cands_b if cid in subset_set]
+                            if len(selected) == r:
+                                pen = expected_penalty(selected)
+                                subsets_b.append((list(subset), pen))
+                    subsets_b.sort(key=lambda x: x[1])
+                    subsets_b = subsets_b[:12]
+
+                    subsets_c = []
+                    for r in range(1, min(5, len(pool) + 1)):
+                        for subset in combinations(pool, r):
+                            subset_set = set(subset)
+                            selected = [(s, cid, w) for s, cid, w in cands_c if cid in subset_set]
+                            if len(selected) == r:
+                                pen = expected_penalty(selected)
+                                subsets_c.append((list(subset), pen))
+                    subsets_c.sort(key=lambda x: x[1])
+                    subsets_c = subsets_c[:12]
+
+                    if not subsets_a or not subsets_b or not subsets_c:
+                        continue
+
+                    found = False
+                    for sub_a, pen_a in subsets_a:
+                        set_a = set(sub_a)
+                        for sub_b, pen_b in subsets_b:
+                            if set_a & set(sub_b):
+                                continue
+                            set_b = set(sub_b)
+                            for sub_c, pen_c in subsets_c:
+                                if set_a & set(sub_c) or set_b & set(sub_c):
+                                    continue
+                                new_pen = pen_a + pen_b + pen_c
+                                if new_pen < old_pen - 1e-7:
+                                    result[idx_a] = (group_a, sub_a)
+                                    result[idx_b] = (group_b, sub_b)
+                                    result[idx_c] = (group_c, sub_c)
+                                    assigned_couriers.clear()
+                                    for _, couriers in result:
+                                        for cid in couriers:
+                                            assigned_couriers.add(cid)
+                                    found = True
+                                    break
+                            if found:
+                                break
+                        if found:
+                            break
+                    if found:
+                        return
+
     start_time = time.time()
     result, assigned_couriers, assigned_tasks = solve_matching()
     result = cover_remaining_tasks(result, assigned_couriers, assigned_tasks)
@@ -863,5 +969,6 @@ def solve(input_text: str) -> list:
     result = final_three_group_pool(result, assigned_couriers)
     first_improvement_top20_triple(result, assigned_couriers, start_time, 9.5)
     anchor_pair_first_improvement(result, assigned_couriers, start_time, 9.5)
+    final_top20_triple_4c(result, assigned_couriers, start_time, 9.5)
 
     return result
