@@ -254,220 +254,71 @@ def solve(input_text: str) -> list:
         improved = True
         while improved:
             improved = False
-            for idx, (group, couriers) in enumerate(result):
+            for idx in range(len(result)):
+                group, couriers = result[idx]
                 if len(couriers) <= 1:
                     continue
                 cands = group_to_candidates[group]
-                current_selected = [(s, cid, w) for s, cid, w in cands if cid in couriers]
-                current_pen = expected_penalty(current_selected)
+                old_selected = [(s, cid, w) for s, cid, w in cands if cid in couriers]
+                old_pen = expected_penalty(old_selected)
+                best_removal = None
+                best_new_pen = old_pen
                 for c in couriers:
                     new_couriers = [x for x in couriers if x != c]
-                    if not new_couriers:
-                        continue
                     new_selected = [(s, cid, w) for s, cid, w in cands if cid in new_couriers]
                     new_pen = expected_penalty(new_selected)
-                    if new_pen < current_pen - 1e-6:
-                        result[idx] = (group, new_couriers)
-                        assigned_couriers.discard(c)
-                        improved = True
+                    if new_pen < best_new_pen - 1e-7:
+                        best_new_pen = new_pen
+                        best_removal = c
+                if best_removal is not None:
+                    result[idx] = (group, [x for x in couriers if x != best_removal])
+                    assigned_couriers.discard(best_removal)
+                    improved = True
+        return result
+
+    def one_courier_relocation(result, assigned_couriers):
+        improved = True
+        while improved:
+            improved = False
+            for i in range(len(result)):
+                group_i, couriers_i = result[i]
+                for j in range(len(result)):
+                    if i == j:
+                        continue
+                    group_j, couriers_j = result[j]
+                    for c in couriers_i:
+                        if len(couriers_i) <= 1:
+                            continue
+                        cands_i = group_to_candidates[group_i]
+                        cands_j = group_to_candidates[group_j]
+
+                        old_i = [(s, cid, w) for s, cid, w in cands_i if cid in couriers_i]
+                        old_j = [(s, cid, w) for s, cid, w in cands_j if cid in couriers_j]
+                        old_pen = expected_penalty(old_i) + expected_penalty(old_j)
+
+                        new_couriers_i = [x for x in couriers_i if x != c]
+                        new_couriers_j = couriers_j + [c]
+
+                        new_i = [(s, cid, w) for s, cid, w in cands_i if cid in new_couriers_i]
+                        new_j = [(s, cid, w) for s, cid, w in cands_j if cid in new_couriers_j]
+
+                        if not new_i or not new_j:
+                            continue
+
+                        new_pen = expected_penalty(new_i) + expected_penalty(new_j)
+
+                        if new_pen < old_pen - 1e-7:
+                            result[i] = (group_i, new_couriers_i)
+                            result[j] = (group_j, new_couriers_j)
+                            improved = True
+                            break
+                    if improved:
                         break
                 if improved:
                     break
         return result
 
-    def one_courier_relocation(result, assigned_couriers):
-        best_score = score_solution(result)
-        improved = True
-        start_time = time.time()
-        while improved and time.time() - start_time < 6.5:
-            improved = False
-            best_move = None
-            best_new_score = best_score
-            for idx_a, (group_a, couriers_a) in enumerate(result):
-                task_ids_a = [t.strip() for t in group_a.split(",")]
-                if len(task_ids_a) != 1:
-                    continue
-                if len(couriers_a) < 2:
-                    continue
-                for c in couriers_a:
-                    for idx_b, (group_b, couriers_b) in enumerate(result):
-                        if idx_a == idx_b:
-                            continue
-                        task_ids_b = [t.strip() for t in group_b.split(",")]
-                        if len(task_ids_b) != 1:
-                            continue
-                        if c in couriers_b:
-                            continue
-                        cands_b = group_to_candidates[group_b]
-                        found = False
-                        for _, cid, _ in cands_b:
-                            if cid == c:
-                                found = True
-                                break
-                        if not found:
-                            continue
-                        new_couriers_a = [x for x in couriers_a if x != c]
-                        new_couriers_b = list(couriers_b) + [c]
-                        if not new_couriers_a:
-                            continue
-                        selected_a = []
-                        for score, cid, w in group_to_candidates[group_a]:
-                            if cid in new_couriers_a:
-                                selected_a.append((score, cid, w))
-                        selected_b = []
-                        for score, cid, w in group_to_candidates[group_b]:
-                            if cid in new_couriers_b:
-                                selected_b.append((score, cid, w))
-                        if not selected_a or not selected_b:
-                            continue
-                        new_pen_a = expected_penalty(selected_a)
-                        new_pen_b = expected_penalty(selected_b)
-                        old_selected_a = []
-                        for score, cid, w in group_to_candidates[group_a]:
-                            if cid in couriers_a:
-                                old_selected_a.append((score, cid, w))
-                        old_selected_b = []
-                        for score, cid, w in group_to_candidates[group_b]:
-                            if cid in couriers_b:
-                                old_selected_b.append((score, cid, w))
-                        old_pen_a = expected_penalty(old_selected_a)
-                        old_pen_b = expected_penalty(old_selected_b)
-                        old_total = old_pen_a + old_pen_b
-                        new_total = new_pen_a + new_pen_b
-                        if new_total < old_total - 1e-7:
-                            temp_result = copy.deepcopy(result)
-                            temp_result[idx_a] = (group_a, new_couriers_a)
-                            temp_result[idx_b] = (group_b, new_couriers_b)
-                            temp_score = score_solution(temp_result)
-                            if temp_score < best_new_score - 1e-7:
-                                best_new_score = temp_score
-                                best_move = (idx_a, idx_b, c, new_couriers_a, new_couriers_b)
-            if best_move is not None:
-                idx_a, idx_b, c, new_couriers_a, new_couriers_b = best_move
-                result[idx_a] = (result[idx_a][0], new_couriers_a)
-                result[idx_b] = (result[idx_b][0], new_couriers_b)
-                assigned_couriers.discard(c)
-                assigned_couriers.add(c)
-                best_score = best_new_score
-                improved = True
-        return result
-
     def three_group_redistribution_fast(result, assigned_couriers):
-        start_time = time.time()
-        n = len(result)
-        single_task_indices = []
-        for i in range(n):
-            group, couriers = result[i]
-            if len(group.split(",")) == 1 and 2 <= len(couriers) <= 3:
-                single_task_indices.append(i)
-        if len(single_task_indices) < 3:
-            return result
-
-        improved = True
-        while improved and time.time() - start_time < 8.2:
-            improved = False
-            best_triple = None
-            best_improvement = 0.0
-
-            for i in range(len(single_task_indices)):
-                for j in range(i + 1, len(single_task_indices)):
-                    for k in range(j + 1, len(single_task_indices)):
-                        if time.time() - start_time > 8.2:
-                            return result
-                        idx_a = single_task_indices[i]
-                        idx_b = single_task_indices[j]
-                        idx_c = single_task_indices[k]
-                        group_a = result[idx_a][0]
-                        group_b = result[idx_b][0]
-                        group_c = result[idx_c][0]
-                        couriers_a = result[idx_a][1]
-                        couriers_b = result[idx_b][1]
-                        couriers_c = result[idx_c][1]
-                        pool = list(set(couriers_a + couriers_b + couriers_c))
-                        if len(pool) > 7:
-                            continue
-                        cands_a = group_to_candidates[group_a]
-                        cands_b = group_to_candidates[group_b]
-                        cands_c = group_to_candidates[group_c]
-
-                        old_selected_a = [(s, cid, w) for s, cid, w in cands_a if cid in couriers_a]
-                        old_selected_b = [(s, cid, w) for s, cid, w in cands_b if cid in couriers_b]
-                        old_selected_c = [(s, cid, w) for s, cid, w in cands_c if cid in couriers_c]
-                        old_pen = expected_penalty(old_selected_a) + expected_penalty(old_selected_b) + expected_penalty(old_selected_c)
-
-                        subsets_a = []
-                        for r in range(1, min(4, len(pool) + 1)):
-                            for subset in combinations(pool, r):
-                                subset_set = set(subset)
-                                selected = [(s, cid, w) for s, cid, w in cands_a if cid in subset_set]
-                                if len(selected) == r:
-                                    pen = expected_penalty(selected)
-                                    subsets_a.append((list(subset), pen))
-                        subsets_a.sort(key=lambda x: x[1])
-                        subsets_a = subsets_a[:12]
-
-                        subsets_b = []
-                        for r in range(1, min(4, len(pool) + 1)):
-                            for subset in combinations(pool, r):
-                                subset_set = set(subset)
-                                selected = [(s, cid, w) for s, cid, w in cands_b if cid in subset_set]
-                                if len(selected) == r:
-                                    pen = expected_penalty(selected)
-                                    subsets_b.append((list(subset), pen))
-                        subsets_b.sort(key=lambda x: x[1])
-                        subsets_b = subsets_b[:12]
-
-                        subsets_c = []
-                        for r in range(1, min(4, len(pool) + 1)):
-                            for subset in combinations(pool, r):
-                                subset_set = set(subset)
-                                selected = [(s, cid, w) for s, cid, w in cands_c if cid in subset_set]
-                                if len(selected) == r:
-                                    pen = expected_penalty(selected)
-                                    subsets_c.append((list(subset), pen))
-                        subsets_c.sort(key=lambda x: x[1])
-                        subsets_c = subsets_c[:12]
-
-                        if not subsets_a or not subsets_b or not subsets_c:
-                            continue
-
-                        for sub_a, pen_a in subsets_a:
-                            set_a = set(sub_a)
-                            for sub_b, pen_b in subsets_b:
-                                if set_a & set(sub_b):
-                                    continue
-                                set_b = set(sub_b)
-                                for sub_c, pen_c in subsets_c:
-                                    if set_a & set(sub_c) or set_b & set(sub_c):
-                                        continue
-                                    new_pen = pen_a + pen_b + pen_c
-                                    improvement = old_pen - new_pen
-                                    if improvement > best_improvement:
-                                        best_improvement = improvement
-                                        best_triple = (idx_a, idx_b, idx_c, sub_a, sub_b, sub_c)
-
-            if best_triple is not None and best_improvement > 1e-7:
-                idx_a, idx_b, idx_c, sub_a, sub_b, sub_c = best_triple
-                result[idx_a] = (result[idx_a][0], sub_a)
-                result[idx_b] = (result[idx_b][0], sub_b)
-                result[idx_c] = (result[idx_c][0], sub_c)
-                assigned_couriers.clear()
-                for _, couriers in result:
-                    for c in couriers:
-                        assigned_couriers.add(c)
-                improved = True
-                single_task_indices = []
-                for i in range(len(result)):
-                    group, couriers = result[i]
-                    if len(group.split(",")) == 1 and 2 <= len(couriers) <= 3:
-                        single_task_indices.append(i)
-                if len(single_task_indices) < 3:
-                    break
-
-        return result
-
-    def additional_three_group_redistribution_fast(result, assigned_couriers):
-        start_time = time.time()
         n = len(result)
         single_task_indices = []
         for i in range(n):
@@ -480,8 +331,6 @@ def solve(input_text: str) -> list:
         for i in range(len(single_task_indices)):
             for j in range(i + 1, len(single_task_indices)):
                 for k in range(j + 1, len(single_task_indices)):
-                    if time.time() - start_time > 7.5:
-                        return result
                     idx_a = single_task_indices[i]
                     idx_b = single_task_indices[j]
                     idx_c = single_task_indices[k]
@@ -560,6 +409,129 @@ def solve(input_text: str) -> list:
                                     return result
         return result
 
+    def additional_three_group_redistribution_fast(result, assigned_couriers):
+        n = len(result)
+        single_task_indices = []
+        for i in range(n):
+            group, couriers = result[i]
+            if len(group.split(",")) == 1 and 2 <= len(couriers) <= 3:
+                single_task_indices.append(i)
+        if len(single_task_indices) < 3:
+            return result
+
+        for i in range(len(single_task_indices)):
+            for j in range(i + 1, len(single_task_indices)):
+                for k in range(j + 1, len(single_task_indices)):
+                    idx_a = single_task_indices[i]
+                    idx_b = single_task_indices[j]
+                    idx_c = single_task_indices[k]
+                    group_a = result[idx_a][0]
+                    group_b = result[idx_b][0]
+                    group_c = result[idx_c][0]
+                    couriers_a = result[idx_a][1]
+                    couriers_b = result[idx_b][1]
+                    couriers_c = result[idx_c][1]
+                    pool = list(set(couriers_a + couriers_b + couriers_c))
+                    if len(pool) > 7:
+                        continue
+                    cands_a = group_to_candidates[group_a]
+                    cands_b = group_to_candidates[group_b]
+                    cands_c = group_to_candidates[group_c]
+
+                    old_selected_a = [(s, cid, w) for s, cid, w in cands_a if cid in couriers_a]
+                    old_selected_b = [(s, cid, w) for s, cid, w in cands_b if cid in couriers_b]
+                    old_selected_c = [(s, cid, w) for s, cid, w in cands_c if cid in couriers_c]
+                    old_pen = expected_penalty(old_selected_a) + expected_penalty(old_selected_b) + expected_penalty(old_selected_c)
+
+                    subsets_a = []
+                    for r in range(1, min(4, len(pool) + 1)):
+                        for subset in combinations(pool, r):
+                            subset_set = set(subset)
+                            selected = [(s, cid, w) for s, cid, w in cands_a if cid in subset_set]
+                            if len(selected) == r:
+                                pen = expected_penalty(selected)
+                                subsets_a.append((list(subset), pen))
+                    subsets_a.sort(key=lambda x: x[1])
+                    subsets_a = subsets_a[:12]
+
+                    subsets_b = []
+                    for r in range(1, min(4, len(pool) + 1)):
+                        for subset in combinations(pool, r):
+                            subset_set = set(subset)
+                            selected = [(s, cid, w) for s, cid, w in cands_b if cid in subset_set]
+                            if len(selected) == r:
+                                pen = expected_penalty(selected)
+                                subsets_b.append((list(subset), pen))
+                    subsets_b.sort(key=lambda x: x[1])
+                    subsets_b = subsets_b[:12]
+
+                    subsets_c = []
+                    for r in range(1, min(4, len(pool) + 1)):
+                        for subset in combinations(pool, r):
+                            subset_set = set(subset)
+                            selected = [(s, cid, w) for s, cid, w in cands_c if cid in subset_set]
+                            if len(selected) == r:
+                                pen = expected_penalty(selected)
+                                subsets_c.append((list(subset), pen))
+                    subsets_c.sort(key=lambda x: x[1])
+                    subsets_c = subsets_c[:12]
+
+                    if not subsets_a or not subsets_b or not subsets_c:
+                        continue
+
+                    for sub_a, pen_a in subsets_a:
+                        set_a = set(sub_a)
+                        for sub_b, pen_b in subsets_b:
+                            if set_a & set(sub_b):
+                                continue
+                            set_b = set(sub_b)
+                            for sub_c, pen_c in subsets_c:
+                                if set_a & set(sub_c) or set_b & set(sub_c):
+                                    continue
+                                new_pen = pen_a + pen_b + pen_c
+                                if new_pen < old_pen - 1e-7:
+                                    result[idx_a] = (group_a, sub_a)
+                                    result[idx_b] = (group_b, sub_b)
+                                    result[idx_c] = (group_c, sub_c)
+                                    assigned_couriers.clear()
+                                    for _, couriers in result:
+                                        for c in couriers:
+                                            assigned_couriers.add(c)
+                                    return result
+        return result
+
+    def post_pool_first_relocation(result, assigned_couriers):
+        for i in range(len(result)):
+            group_i, couriers_i = result[i]
+            if len(group_i.split(",")) != 1 or len(couriers_i) < 2:
+                continue
+            for j in range(len(result)):
+                if i == j:
+                    continue
+                group_j, couriers_j = result[j]
+                for c in couriers_i:
+                    cands_i = group_to_candidates[group_i]
+                    cands_j = group_to_candidates[group_j]
+                    old_i = [(s, cid, w) for s, cid, w in cands_i if cid in couriers_i]
+                    old_j = [(s, cid, w) for s, cid, w in cands_j if cid in couriers_j]
+                    old_pen = expected_penalty(old_i) + expected_penalty(old_j)
+                    new_couriers_i = [x for x in couriers_i if x != c]
+                    new_couriers_j = couriers_j + [c]
+                    new_i = [(s, cid, w) for s, cid, w in cands_i if cid in new_couriers_i]
+                    new_j = [(s, cid, w) for s, cid, w in cands_j if cid in new_couriers_j]
+                    if not new_i or not new_j:
+                        continue
+                    new_pen = expected_penalty(new_i) + expected_penalty(new_j)
+                    if new_pen < old_pen - 1e-7:
+                        result[i] = (group_i, new_couriers_i)
+                        result[j] = (group_j, new_couriers_j)
+                        assigned_couriers.clear()
+                        for _, couriers in result:
+                            for cid in couriers:
+                                assigned_couriers.add(cid)
+                        return result
+        return result
+
     result, assigned_couriers, assigned_tasks = solve_matching()
     result = cover_remaining_tasks(result, assigned_couriers, assigned_tasks)
     result = global_extra_offer_phase(result, assigned_couriers, assigned_tasks)
@@ -571,5 +543,6 @@ def solve(input_text: str) -> list:
     result = one_courier_relocation(result, assigned_couriers)
     result = three_group_redistribution_fast(result, assigned_couriers)
     result = additional_three_group_redistribution_fast(result, assigned_couriers)
+    result = post_pool_first_relocation(result, assigned_couriers)
 
     return result
