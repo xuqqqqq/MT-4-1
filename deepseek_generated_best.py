@@ -49,35 +49,84 @@ def solve(input_text: str) -> list:
         bundle_size = len(selected[0][1].split(","))
         return accept * accepted_score + miss * 100.0 * bundle_size
 
-    def build_solution_with_sort_key(sort_key):
+    def solve_matching():
+        task_list = sorted(all_tasks)
+        courier_set = set()
+        for _, _, cid, _ in candidates:
+            courier_set.add(cid)
+        courier_list = sorted(courier_set)
+        n_tasks = len(task_list)
+        n_couriers = len(courier_list)
+
+        task_to_idx = {t: i for i, t in enumerate(task_list)}
+        courier_to_idx = {c: j for j, c in enumerate(courier_list)}
+
+        cost_matrix = [[100.0] * n_couriers for _ in range(n_tasks)]
+        for score, task_id_list_str, courier_id, willingness in candidates:
+            task_ids = [t.strip() for t in task_id_list_str.split(",")]
+            if len(task_ids) == 1:
+                t_idx = task_to_idx[task_ids[0]]
+                c_idx = courier_to_idx[courier_id]
+                pen = expected_penalty([(score, task_id_list_str, willingness)])
+                cost_matrix[t_idx][c_idx] = min(cost_matrix[t_idx][c_idx], pen)
+
+        u = [0.0] * (n_tasks + 1)
+        v = [0.0] * (n_couriers + 1)
+        p = [0] * (n_couriers + 1)
+        way = [0] * (n_couriers + 1)
+
+        for i in range(1, n_tasks + 1):
+            p[0] = i
+            j0 = 0
+            minv = [float('inf')] * (n_couriers + 1)
+            used = [False] * (n_couriers + 1)
+            while True:
+                used[j0] = True
+                i0 = p[j0]
+                delta = float('inf')
+                j1 = 0
+                for j in range(1, n_couriers + 1):
+                    if not used[j]:
+                        cur = cost_matrix[i0 - 1][j - 1] - u[i0] - v[j]
+                        if cur < minv[j]:
+                            minv[j] = cur
+                            way[j] = j0
+                        if minv[j] < delta:
+                            delta = minv[j]
+                            j1 = j
+                for j in range(n_couriers + 1):
+                    if used[j]:
+                        u[p[j]] += delta
+                        v[j] -= delta
+                    else:
+                        minv[j] -= delta
+                j0 = j1
+                if p[j0] == 0:
+                    break
+            while True:
+                j1 = way[j0]
+                p[j0] = p[j1]
+                j0 = j1
+                if j0 == 0:
+                    break
+
+        assignment = [-1] * n_tasks
+        for j in range(1, n_couriers + 1):
+            if p[j] > 0:
+                assignment[p[j] - 1] = j - 1
+
+        result = []
         assigned_couriers = set()
         assigned_tasks = set()
-        result = []
 
-        groups_sorted = sorted(group_to_candidates.keys(), key=sort_key)
-
-        for group in groups_sorted:
-            task_ids = [t.strip() for t in group.split(",")]
-            if any(t in assigned_tasks for t in task_ids):
-                continue
-
-            cands = group_to_candidates[group]
-            best_pen = float('inf')
-            best_courier = None
-
-            for score, courier_id, willingness in cands:
-                if courier_id in assigned_couriers:
-                    continue
-                pen = expected_penalty([(score, group, willingness)])
-                if pen < best_pen:
-                    best_pen = pen
-                    best_courier = courier_id
-
-            if best_courier:
-                assigned_couriers.add(best_courier)
-                for t in task_ids:
-                    assigned_tasks.add(t)
-                result.append((group, [best_courier]))
+        for t_idx, c_idx in enumerate(assignment):
+            if c_idx >= 0 and cost_matrix[t_idx][c_idx] < 100.0:
+                task_id = task_list[t_idx]
+                courier_id = courier_list[c_idx]
+                group = task_id
+                result.append((group, [courier_id]))
+                assigned_couriers.add(courier_id)
+                assigned_tasks.add(task_id)
 
         return result, assigned_couriers, assigned_tasks
 
@@ -108,7 +157,7 @@ def solve(input_text: str) -> list:
                         best_group_idx = idx
                         best_courier = courier_id
 
-            if best_gain > 1e-6 and best_group_idx >= 0:
+            if best_gain > 1e-6:
                 group, couriers = result[best_group_idx]
                 couriers.append(best_courier)
                 assigned_couriers.add(best_courier)
@@ -116,58 +165,16 @@ def solve(input_text: str) -> list:
 
         return result
 
-    def cover_remaining_tasks(result, assigned_couriers, assigned_tasks):
-        remaining = all_tasks - assigned_tasks
-        if not remaining:
-            return result
-
-        for group in group_to_candidates:
-            task_ids = [t.strip() for t in group.split(",")]
-            if not any(t in remaining for t in task_ids):
-                continue
-            if all(t in assigned_tasks for t in task_ids):
-                continue
-
-            cands = group_to_candidates[group]
-            best_pen = float('inf')
-            best_courier = None
-
-            for score, courier_id, willingness in cands:
-                if courier_id in assigned_couriers:
-                    continue
-                pen = expected_penalty([(score, group, willingness)])
-                if pen < best_pen:
-                    best_pen = pen
-                    best_courier = courier_id
-
-            if best_courier:
-                assigned_couriers.add(best_courier)
-                for t in task_ids:
-                    assigned_tasks.add(t)
-                result.append((group, [best_courier]))
-
-        return result
-
     def local_swap_phase(result, assigned_couriers, assigned_tasks):
         improved = True
         while improved:
             improved = False
-            n = len(result)
-            for i in range(n):
-                for j in range(i + 1, n):
-                    group1, couriers1 = result[i]
+            for i in range(len(result)):
+                group1, couriers1 = result[i]
+                for j in range(i + 1, len(result)):
                     group2, couriers2 = result[j]
-
                     for c1 in couriers1:
                         for c2 in couriers2:
-                            if c1 == c2:
-                                continue
-
-                            task_ids1 = set(group1.split(","))
-                            task_ids2 = set(group2.split(","))
-                            if task_ids1 & task_ids2:
-                                continue
-
                             cands1 = group_to_candidates[group1]
                             cands2 = group_to_candidates[group2]
 
@@ -189,10 +196,6 @@ def solve(input_text: str) -> list:
                             if new_pen < old_pen - 1e-6:
                                 result[i] = (group1, new_couriers1)
                                 result[j] = (group2, new_couriers2)
-                                assigned_couriers.discard(c1)
-                                assigned_couriers.discard(c2)
-                                assigned_couriers.add(c1)
-                                assigned_couriers.add(c2)
                                 improved = True
                                 break
                         if improved:
@@ -201,6 +204,53 @@ def solve(input_text: str) -> list:
                         break
                 if improved:
                     break
+        return result
+
+    def cover_remaining_tasks(result, assigned_couriers, assigned_tasks):
+        uncovered = [t for t in all_tasks if t not in assigned_tasks]
+        for task in uncovered:
+            best_pen = float('inf')
+            best_courier = None
+            best_group = None
+            for group, cands in group_to_candidates.items():
+                task_ids = [t.strip() for t in group.split(",")]
+                if task in task_ids and all(t not in assigned_tasks for t in task_ids):
+                    for score, courier_id, willingness in cands:
+                        if courier_id in assigned_couriers:
+                            continue
+                        pen = expected_penalty([(score, group, willingness)])
+                        if pen < best_pen:
+                            best_pen = pen
+                            best_courier = courier_id
+                            best_group = group
+            if best_courier:
+                result.append((best_group, [best_courier]))
+                assigned_couriers.add(best_courier)
+                for t in best_group.split(","):
+                    assigned_tasks.add(t.strip())
+        return result
+
+    def courier_reduction_phase(result, assigned_couriers):
+        improved = True
+        while improved:
+            improved = False
+            for idx, (group, couriers) in enumerate(result):
+                if len(couriers) <= 1:
+                    continue
+                cands = group_to_candidates[group]
+                current_selected = [(s, cid, w) for s, cid, w in cands if cid in couriers]
+                old_pen = expected_penalty(current_selected)
+                for c in couriers:
+                    new_couriers = [x for x in couriers if x != c]
+                    new_selected = [(s, cid, w) for s, cid, w in cands if cid in new_couriers]
+                    if not new_selected:
+                        continue
+                    new_pen = expected_penalty(new_selected)
+                    if new_pen < old_pen - 1e-6:
+                        result[idx] = (group, new_couriers)
+                        assigned_couriers.discard(c)
+                        improved = True
+                        break
         return result
 
     def score_solution(solution):
@@ -220,33 +270,13 @@ def solve(input_text: str) -> list:
 
         return total
 
-    best_result = None
-    best_score = float('inf')
+    result, assigned_couriers, assigned_tasks = solve_matching()
+    result = cover_remaining_tasks(result, assigned_couriers, assigned_tasks)
+    result = global_extra_offer_phase(result, assigned_couriers, assigned_tasks)
+    result = local_swap_phase(result, assigned_couriers, assigned_tasks)
+    result = courier_reduction_phase(result, assigned_couriers)
+    result = global_extra_offer_phase(result, assigned_couriers, assigned_tasks)
+    result = local_swap_phase(result, assigned_couriers, assigned_tasks)
+    result = courier_reduction_phase(result, assigned_couriers)
 
-    sort_keys = [
-        lambda g: min(c[0] for c in group_to_candidates[g]),
-        lambda g: expected_penalty([(c[0], g, c[2]) for c in group_to_candidates[g][:1]]),
-        lambda g: min(c[2] for c in group_to_candidates[g]),
-        lambda g: -max(c[2] for c in group_to_candidates[g]),
-        lambda g: min(c[0] for c in group_to_candidates[g]) / len(g.split(",")),
-        lambda g: expected_penalty([(c[0], g, c[2]) for c in group_to_candidates[g][:1]]) / len(g.split(",")),
-        lambda g: min(c[0] * c[2] for c in group_to_candidates[g]),
-        lambda g: min(c[0] / (c[2] + 0.001) for c in group_to_candidates[g]),
-        lambda g: len(group_to_candidates[g]),
-        lambda g: -len(group_to_candidates[g]),
-        lambda g: sum(c[0] for c in group_to_candidates[g]) / len(group_to_candidates[g]),
-        lambda g: min(c[0] for c in group_to_candidates[g]) * (1.0 - max(c[2] for c in group_to_candidates[g])),
-    ]
-
-    for sort_key in sort_keys:
-        result, assigned_couriers, assigned_tasks = build_solution_with_sort_key(sort_key)
-        result = global_extra_offer_phase(result, assigned_couriers, assigned_tasks)
-        result = cover_remaining_tasks(result, assigned_couriers, assigned_tasks)
-        result = local_swap_phase(result, assigned_couriers, assigned_tasks)
-        result = global_extra_offer_phase(result, assigned_couriers, assigned_tasks)
-        s = score_solution(result)
-        if s < best_score:
-            best_score = s
-            best_result = result
-
-    return best_result
+    return result
