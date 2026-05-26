@@ -273,130 +273,83 @@ def solve(input_text: str) -> list:
 
         return total
 
-    def three_task_subset_improvement(result, assigned_couriers):
+    def one_courier_relocation(result, assigned_couriers):
         best_solution = copy.deepcopy(result)
         best_score = score_solution(best_solution)
-
-        # Get all single-task groups from the solution
-        single_task_groups = []
-        for idx, (group, couriers) in enumerate(result):
-            task_ids = [t.strip() for t in group.split(",")]
-            if len(task_ids) == 1:
-                single_task_groups.append((idx, task_ids[0], group, couriers))
-
-        if len(single_task_groups) < 3:
-            return best_solution
-
-        # Build task to top couriers mapping (single-task only)
-        task_to_top_couriers = {}
-        for task in all_tasks:
-            cands = []
-            for score, task_id_list_str, courier_id, willingness in candidates:
-                task_ids = [t.strip() for t in task_id_list_str.split(",")]
-                if len(task_ids) == 1 and task_ids[0] == task:
-                    cands.append((score, task_id_list_str, courier_id, willingness))
-            cands.sort(key=lambda x: expected_penalty([(x[0], x[1], x[3])]))
-            task_to_top_couriers[task] = cands[:10]
-
         start_time = time.time()
         improved = True
         while improved and time.time() - start_time < 8.5:
             improved = False
-
-            # Try all triples of single-task groups
-            for i in range(len(single_task_groups)):
-                for j in range(i + 1, len(single_task_groups)):
-                    for k in range(j + 1, len(single_task_groups)):
-                        if time.time() - start_time > 8.5:
-                            return best_solution
-
-                        idx1, task1, group1, couriers1 = single_task_groups[i]
-                        idx2, task2, group2, couriers2 = single_task_groups[j]
-                        idx3, task3, group3, couriers3 = single_task_groups[k]
-
-                        # Get current couriers for these groups
-                        current_couriers = set(couriers1 + couriers2 + couriers3)
-
-                        # Get candidate subsets for each task
-                        cands1 = task_to_top_couriers.get(task1, [])
-                        cands2 = task_to_top_couriers.get(task2, [])
-                        cands3 = task_to_top_couriers.get(task3, [])
-
-                        if not cands1 or not cands2 or not cands3:
+            best_move = None
+            best_new_score = best_score
+            for idx_a, (group_a, couriers_a) in enumerate(result):
+                task_ids_a = [t.strip() for t in group_a.split(",")]
+                if len(task_ids_a) != 1:
+                    continue
+                if len(couriers_a) < 2:
+                    continue
+                for c in couriers_a:
+                    for idx_b, (group_b, couriers_b) in enumerate(result):
+                        if idx_a == idx_b:
                             continue
-
-                        # Generate top 12 subsets for each task (sizes 1..3)
-                        subsets1 = []
-                        for size in range(1, min(4, len(cands1) + 1)):
-                            for combo in combinations(range(len(cands1)), size):
-                                subset = [cands1[x] for x in combo]
-                                subset_couriers = [x[2] for x in subset]
-                                pen = expected_penalty([(x[0], x[1], x[3]) for x in subset])
-                                subsets1.append((subset_couriers, subset, pen))
-                        subsets1.sort(key=lambda x: x[2])
-                        subsets1 = subsets1[:12]
-
-                        subsets2 = []
-                        for size in range(1, min(4, len(cands2) + 1)):
-                            for combo in combinations(range(len(cands2)), size):
-                                subset = [cands2[x] for x in combo]
-                                subset_couriers = [x[2] for x in subset]
-                                pen = expected_penalty([(x[0], x[1], x[3]) for x in subset])
-                                subsets2.append((subset_couriers, subset, pen))
-                        subsets2.sort(key=lambda x: x[2])
-                        subsets2 = subsets2[:12]
-
-                        subsets3 = []
-                        for size in range(1, min(4, len(cands3) + 1)):
-                            for combo in combinations(range(len(cands3)), size):
-                                subset = [cands3[x] for x in combo]
-                                subset_couriers = [x[2] for x in subset]
-                                pen = expected_penalty([(x[0], x[1], x[3]) for x in subset])
-                                subsets3.append((subset_couriers, subset, pen))
-                        subsets3.sort(key=lambda x: x[2])
-                        subsets3 = subsets3[:12]
-
-                        # Try combinations of subsets
-                        for sub1_couriers, sub1_data, pen1 in subsets1:
-                            for sub2_couriers, sub2_data, pen2 in subsets2:
-                                for sub3_couriers, sub3_data, pen3 in subsets3:
-                                    all_couriers = set(sub1_couriers + sub2_couriers + sub3_couriers)
-                                    if len(all_couriers) != len(sub1_couriers) + len(sub2_couriers) + len(sub3_couriers):
-                                        continue
-                                    if any(c in assigned_couriers and c not in current_couriers for c in all_couriers):
-                                        continue
-
-                                    # Check if this improves the solution
-                                    temp_result = copy.deepcopy(result)
-                                    temp_result[idx1] = (group1, list(sub1_couriers))
-                                    temp_result[idx2] = (group2, list(sub2_couriers))
-                                    temp_result[idx3] = (group3, list(sub3_couriers))
-
-                                    temp_assigned = set(assigned_couriers)
-                                    for c in current_couriers:
-                                        if c not in all_couriers:
-                                            temp_assigned.discard(c)
-                                    for c in all_couriers:
-                                        temp_assigned.add(c)
-
-                                    temp_score = score_solution(temp_result)
-                                    if temp_score < best_score - 1e-7:
-                                        best_score = temp_score
-                                        best_solution = temp_result
-                                        improved = True
-                                        break
-                                if improved:
-                                    break
-                            if improved:
+                        task_ids_b = [t.strip() for t in group_b.split(",")]
+                        if len(task_ids_b) != 1:
+                            continue
+                        if c in couriers_b:
+                            continue
+                        cands_b = group_to_candidates[group_b]
+                        found = False
+                        for _, cid, _ in cands_b:
+                            if cid == c:
+                                found = True
                                 break
-                        if improved:
-                            break
-                    if improved:
-                        break
-                if improved:
-                    break
-
-        return best_solution
+                        if not found:
+                            continue
+                        new_couriers_a = [x for x in couriers_a if x != c]
+                        new_couriers_b = list(couriers_b) + [c]
+                        if not new_couriers_a:
+                            continue
+                        selected_a = []
+                        for score, cid, w in group_to_candidates[group_a]:
+                            if cid in new_couriers_a:
+                                selected_a.append((score, cid, w))
+                        selected_b = []
+                        for score, cid, w in group_to_candidates[group_b]:
+                            if cid in new_couriers_b:
+                                selected_b.append((score, cid, w))
+                        if not selected_a or not selected_b:
+                            continue
+                        new_pen_a = expected_penalty(selected_a)
+                        new_pen_b = expected_penalty(selected_b)
+                        old_selected_a = []
+                        for score, cid, w in group_to_candidates[group_a]:
+                            if cid in couriers_a:
+                                old_selected_a.append((score, cid, w))
+                        old_selected_b = []
+                        for score, cid, w in group_to_candidates[group_b]:
+                            if cid in couriers_b:
+                                old_selected_b.append((score, cid, w))
+                        old_pen_a = expected_penalty(old_selected_a)
+                        old_pen_b = expected_penalty(old_selected_b)
+                        old_total = old_pen_a + old_pen_b
+                        new_total = new_pen_a + new_pen_b
+                        if new_total < old_total - 1e-7:
+                            temp_result = copy.deepcopy(result)
+                            temp_result[idx_a] = (group_a, new_couriers_a)
+                            temp_result[idx_b] = (group_b, new_couriers_b)
+                            temp_score = score_solution(temp_result)
+                            if temp_score < best_new_score - 1e-7:
+                                best_new_score = temp_score
+                                best_move = (idx_a, idx_b, c, new_couriers_a, new_couriers_b)
+            if best_move is not None:
+                idx_a, idx_b, c, new_couriers_a, new_couriers_b = best_move
+                result[idx_a] = (result[idx_a][0], new_couriers_a)
+                result[idx_b] = (result[idx_b][0], new_couriers_b)
+                assigned_couriers.discard(c)
+                assigned_couriers.add(c)
+                best_score = best_new_score
+                improved = True
+        return result
 
     result, assigned_couriers, assigned_tasks = solve_matching()
     result = cover_remaining_tasks(result, assigned_couriers, assigned_tasks)
@@ -406,8 +359,6 @@ def solve(input_text: str) -> list:
     result = global_extra_offer_phase(result, assigned_couriers, assigned_tasks)
     result = local_swap_phase(result, assigned_couriers, assigned_tasks)
     result = courier_reduction_phase(result, assigned_couriers)
-
-    # New three-task subset improvement phase
-    result = three_task_subset_improvement(result, assigned_couriers)
+    result = one_courier_relocation(result, assigned_couriers)
 
     return result
