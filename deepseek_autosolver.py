@@ -552,6 +552,11 @@ except Exception as e:
                 logger.error("Unexpected result format: {}".format(result))
                 return None
         except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.communicate()
+            except Exception:
+                pass
             logger.error("Solver timed out after {}s".format(timeout))
             return None
         except json.JSONDecodeError as e:
@@ -586,6 +591,15 @@ def build_generation_prompt(
         "courier_id_list is a list/tuple of one or more courier IDs offered for that exact task group.",
         "The input is TSV with columns: task_id_list, courier_id, total_score, willingness.",
         "The official baseline below is authoritative for parsing and return format, but you should improve it.",
+        "Objective for one selected task group with several offered couriers:",
+        "  miss = product(1 - willingness_i)",
+        "  accept = 1 - miss",
+        "  accepted_score = sum(w_i * total_score_i) / sum(w_i)",
+        "  expected_penalty = accept * accepted_score + miss * 100 * bundle_size",
+        "Total objective is the sum of group expected_penalties plus 100 for missing/invalid/duplicate tasks.",
+        "Therefore adding a second or third courier to an already selected group can improve the score even when all tasks are already covered.",
+        "A good compact strategy is: choose non-overlapping task groups, pick one good courier per group, then greedily add extra unused couriers to existing groups if the marginal expected_penalty decreases.",
+        "Pair/bundle rows can beat single rows when their expected_penalty is better than covering the tasks separately.",
         "Use only Python 3.6 standard library. No external packages.",
         "Do not use dataclasses, walrus operator, or match/case statements.",
         "Hard line budget: the complete solver must be under 260 physical lines.",
