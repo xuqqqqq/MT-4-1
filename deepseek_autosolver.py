@@ -191,6 +191,18 @@ def format_population_summary(state, max_items=8):
     return "\n".join(rows)
 
 
+def ahd_framework_notes():
+    """Short literature-derived guidance for the LLM, not a solver algorithm."""
+    return "\n".join([
+        "Use an automatic heuristic design loop, not one-shot coding:",
+        "- EoH style: keep a population of executable heuristics, generate mutations/crossovers, and let black-box fitness select survivors.",
+        "- ReEvo style: convert score differences and failures into reflective verbal gradients before writing the next program.",
+        "- HeurAgenix style: extract reusable strategies by comparing stronger and weaker candidates, then evolve and select among complementary heuristics.",
+        "- Prefer explicit operators such as construction, intensification, diversification, repair, and neighborhood search.",
+        "- The controller will only execute your code on large_seed301 and feed back objective/legality/runtime evidence.",
+    ])
+
+
 def record_population_result(state, path, code, result, mode="", feedback=""):
     entry = {
         "timestamp": int(time.time()),
@@ -629,6 +641,9 @@ def build_generation_prompt(
         "- reflect: use the population summary and feedback as verbal gradients.",
         "- region: specialize for the stated input-region while remaining general.",
         "",
+        "=== AUTOMATIC HEURISTIC DESIGN FRAMEWORK NOTES ===",
+        ahd_framework_notes(),
+        "",
     ]
 
     if problem_info:
@@ -747,12 +762,16 @@ def build_strategy_reflection_prompt(
         "- Current best structure on large_seed301 is 40 selected groups / 80 courier offers: all selected groups are single-task bundles; offer counts are roughly thirty groups with 2 couriers, five with 3 couriers, and five with 1 courier.",
         "- Therefore simple 'add a second courier' logic is already largely present; focus on different assignment/global-selection neighborhoods unless you can improve that phase concretely.",
         "- Pair/matching/local-reassignment mutations recently regressed to roughly 696.99, 699.52, 838.21, 977.97, or worse.",
+        "- Recent black-box feedback on large_seed301: group-level courier-set replacement timed out; multi-task bundle insertion scored 689.93 or tied 673.37; ruin-and-recreate timed out; tabu reassignment tied 673.37; split/recombine scored 697.24; global reassignment scored 679.91.",
+        "- Treat those families as explored unless you make a materially simpler/faster or structurally different variant.",
         "- A generated solver with many literal T####/C#### IDs is rejected as case-specific.",
         "",
         "Think in terms of initialization, intensification, diversification, and neighborhood structure.",
         "Explain why the current basin may be missing better task/courier combinations.",
         "Then choose exactly one next operator for the generator to implement.",
         "The chosen operator should be concrete enough to become a REGION SPECIALIZATION HINT.",
+        "If the previous feedback shows a timeout, tie, or regression, do not repeat the same operator family.",
+        "A new operator is materially different only if it changes the construction/neighborhood/search-control idea, not just wording.",
         "",
         "Return this exact structure:",
         "1. Diagnosis:",
@@ -761,6 +780,9 @@ def build_strategy_reflection_prompt(
         "4. Chosen operator:",
         "5. NEXT_GENERATION_HINT:",
         "Put only the final actionable prompt text under NEXT_GENERATION_HINT.",
+        "",
+        "=== AUTOMATIC HEURISTIC DESIGN FRAMEWORK NOTES ===",
+        ahd_framework_notes(),
         "",
     ]
     if problem_info:
@@ -1049,6 +1071,34 @@ def cmd_evaluate(args):
 
     if solution is None:
         logger.error("Solver execution failed")
+        failure_feedback = (
+            "Candidate failed on local evaluation.\n"
+            "Case: {}\n"
+            "Timeout limit: {} seconds\n"
+            "Generation hint used:\n{}\n"
+            "Result: solver execution failed or timed out before producing a legal list.\n"
+        ).format(args.tsv_file, args.timeout, state.get("last_region_hint", ""))
+        state["last_feedback"] = failure_feedback
+        state["last_evaluation"] = {
+            "cost": None,
+            "missing_tasks": [],
+            "duplicate_tasks": [],
+            "duplicate_couriers": [],
+            "invalid_pairs": [],
+            "num_valid_pairs": 0,
+            "num_invalid_pairs": 0,
+            "total_tasks": 0,
+            "covered_tasks": 0,
+            "failed": True,
+        }
+        save_state(state)
+        append_log({
+            "event": "evaluate_failed",
+            "timestamp": int(time.time()),
+            "candidate": candidate_path,
+            "timeout": args.timeout,
+            "tsv_file": args.tsv_file,
+        })
         # Try repair if requested
         if args.repair:
             logger.info("Attempting repair...")
@@ -1083,11 +1133,12 @@ def cmd_evaluate(args):
     # Update state with feedback
     feedback = (
         "Cost: {:.2f}\n"
+        "Generation hint used:\n{}\n"
         "Missing tasks: {}\n"
         "Duplicate tasks: {}\n"
         "Duplicate couriers: {}\n"
         "Invalid pairs: {}\n"
-    ).format(result['cost'], result['missing_tasks'], result['duplicate_tasks'], 
+    ).format(result['cost'], state.get("last_region_hint", ""), result['missing_tasks'], result['duplicate_tasks'],
              result['duplicate_couriers'], result['invalid_pairs'])
     state["last_feedback"] = feedback
     state["last_evaluation"] = result
