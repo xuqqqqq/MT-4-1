@@ -85,6 +85,43 @@ def write_file(path: Path, content: str):
         f.write(content)
 
 
+def strip_code_fences(text):
+    # If text contains fenced code blocks, return the largest python/plain block.
+    # If no fence exists, remove leading/trailing whitespace and append newline.
+    lines = text.split('\n')
+    fences = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith('```'):
+            lang = line[3:].strip().lower()
+            j = i + 1
+            while j < len(lines) and not lines[j].startswith('```'):
+                j += 1
+            if j < len(lines):
+                fences.append((i, j, lang))
+                i = j + 1
+            else:
+                i += 1
+        else:
+            i += 1
+    if not fences:
+        return text.strip() + '\n'
+    allowed = []
+    for fence in fences:
+        if fence[2] in ('', 'python', 'py'):
+            allowed.append(fence)
+    if not allowed:
+        return text.strip() + '\n'
+    best = max(allowed, key=lambda f: f[1] - f[0] - 1)
+    start, end, _ = best
+    code_lines = lines[start + 1:end]
+    code = '\n'.join(code_lines).strip()
+    if code.startswith('python\n'):
+        code = code[7:].strip()
+    return code + '\n'
+
+
 def call_deepseek(prompt: str, model: str = "deepseek-chat", max_tokens: int = 4096) -> str:
     """Call DeepSeek API with given prompt and return response text."""
     api_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -527,6 +564,7 @@ def cmd_generate(args):
     logger.info("Calling DeepSeek to generate solver...")
     try:
         code = call_deepseek(prompt, max_tokens=args.max_tokens)
+        code = strip_code_fences(code)
     except Exception as e:
         logger.error("Generation failed: {}".format(e))
         return
@@ -585,6 +623,7 @@ def cmd_evaluate(args):
             repair_prompt = build_repair_prompt(code, error_msg)
             try:
                 new_code = call_deepseek(repair_prompt, max_tokens=args.max_tokens)
+                new_code = strip_code_fences(new_code)
                 timestamp = int(time.time())
                 repair_file = CANDIDATES_DIR / "solver_repair_{}.py".format(timestamp)
                 write_file(repair_file, new_code)
@@ -728,6 +767,7 @@ def cmd_loop(args):
         )
         try:
             code = call_deepseek(prompt, max_tokens=args.max_tokens)
+            code = strip_code_fences(code)
         except Exception as e:
             logger.error("Generation failed: {}".format(e))
             continue
@@ -747,6 +787,7 @@ def cmd_loop(args):
             repair_prompt = build_repair_prompt(code, "Execution failed")
             try:
                 code = call_deepseek(repair_prompt, max_tokens=args.max_tokens)
+                code = strip_code_fences(code)
                 repair_file = CANDIDATES_DIR / "solver_repair_iter{}_{}.py".format(iteration, timestamp)
                 write_file(repair_file, code)
                 state["last_candidate_code"] = code
