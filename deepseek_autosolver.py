@@ -680,7 +680,7 @@ def build_generation_prompt(
         prompt_parts.append("=== PARENT SOLVER EXCERPTS ===")
         for i, parent in enumerate(parent_solvers):
             prompt_parts.append("Parent {}:".format(i + 1))
-            prompt_parts.append(shorten_text(parent, 20000))
+            prompt_parts.append(shorten_text(parent, 50000))
             prompt_parts.append("")
 
     if region_hint:
@@ -850,7 +850,7 @@ def build_strategy_reflection_prompt(
         prompt_parts.append("=== PARENT SOLVER EXCERPTS ===")
         for i, parent in enumerate(parent_solvers):
             prompt_parts.append("Parent {}:".format(i + 1))
-            prompt_parts.append(shorten_text(parent, 16000))
+            prompt_parts.append(shorten_text(parent, 50000))
             prompt_parts.append("")
     return "\n".join(prompt_parts)
 
