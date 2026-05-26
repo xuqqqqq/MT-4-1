@@ -631,14 +631,14 @@ def build_generation_prompt(
         "Pair/bundle rows can beat single rows when their expected_penalty is better than covering the tasks separately.",
         "Use only Python 3.6 standard library. No external packages.",
         "Do not use dataclasses, walrus operator, or match/case statements.",
-        "Hard line budget: the complete solver must be under 260 physical lines.",
-        "Any solution that is truncated, unfinished, or over 260 lines is invalid.",
+        "Hard line budget: the complete solver must be under 420 physical lines.",
+        "Any solution that is truncated, unfinished, or over 420 lines is invalid.",
         "The solver must be a general algorithm for arbitrary TSV input, not a case-specific answer.",
         "Do not hardcode task IDs, courier IDs, literal assignment tables, or any rows copied from examples.",
         "If the code contains many literals like T0001 or C0001, it is invalid.",
         "Prefer compact heuristics: parse rows, build bundle/courier candidates, greedy assignment, then add a few extra courier offers.",
         "Do not implement large class frameworks, long multi-opt local search, or thousands of lines of copied code.",
-        "Do not copy a long seed solver verbatim. Use the official baseline for I/O and the seed as strategy inspiration.",
+        "Do not copy a long seed solver verbatim. For mutate mode, preserving a strong parent and adding a small verified improvement is allowed.",
         "The returned code must be syntactically complete; do not stop mid-function.",
         "Output ONLY the raw Python code, no explanations or markdown.",
         "",
@@ -680,7 +680,7 @@ def build_generation_prompt(
         prompt_parts.append("=== PARENT SOLVER EXCERPTS ===")
         for i, parent in enumerate(parent_solvers):
             prompt_parts.append("Parent {}:".format(i + 1))
-            prompt_parts.append(shorten_text(parent, 8000))
+            prompt_parts.append(shorten_text(parent, 20000))
             prompt_parts.append("")
 
     if region_hint:
@@ -767,7 +767,7 @@ def build_strategy_reflection_prompt(
         "",
         "Important empirical memory from this DeepSeek branch:",
         "- Official greedy baseline on large_seed301: about 2097.66.",
-        "- Earlier non-hardcoded DeepSeek solver on large_seed301 reached about 678.40.",
+        "- Earlier non-hardcoded DeepSeek solver on large_seed301 reached about 678.40; current retained best is 668.454046283561.",
         "- Use the population summary below as the source of truth for the current best score.",
         "- The current target is to push large_seed301 to <= 650.0, not merely to tie the current incumbent.",
         "- The best solvers cover all 40 tasks with 80 valid offers and mostly single-task groups.",
@@ -776,6 +776,11 @@ def build_strategy_reflection_prompt(
         "- Pair/matching/local-reassignment mutations recently regressed to roughly 696.99, 699.52, 838.21, 977.97, or worse.",
         "- Recent black-box feedback on large_seed301: group-level courier-set replacement timed out; multi-task bundle insertion scored 689.93 or tied 673.37; ruin-and-recreate timed out; tabu reassignment tied 673.37; split/recombine scored 697.24; global reassignment scored 679.91.",
         "- Additional black-box feedback: weighted random construction plus simulated annealing tied 673.37 at 8.56s; bundle-first construction regressed to 1062.92 with an invalid pair; ratio-based multi-task-first construction was legal but regressed to 772.93; group-merge with courier reallocation exploded to 5484.67 with duplicate couriers and invalid pairs; global courier subset reassignment timed out; task-splitting diversification regressed to 689.29; deterministic merge and block-swap tied 673.37.",
+        "- Latest black-box feedback: partial-overlap bundle swap was legal and non-hardcoded but regressed to 695.19 at 2.78s, so overlap regrouping must add a stronger value test or be avoided.",
+        "- Latest black-box feedback: iterative bundle relaxation from single-task assignment also produced the same legal 695.19 solution, so simple multi-task bundle substitution is not enough.",
+        "- Latest black-box feedback: multi-task-first construction regressed to 1521.42 and emitted invalid input keys, so any bundle/group output must reuse exact task_id_list strings from input rows.",
+        "- Latest black-box feedback: single-task courier-subset beam first crashed with unpacking, then ran legal but regressed to 695.19 and failed to keep the 669.70 parent fallback.",
+        "- Latest black-box feedback: preserving the parent and adding exact 2-task subset neighborhoods tied 669.70; adding exact 3-task neighborhoods improved to 668.4540 but runtime was high at about 9.66s.",
         "- Treat those families as explored unless you make a materially simpler/faster or structurally different variant.",
         "- A generated solver with many literal T####/C#### IDs is rejected as case-specific.",
         "",
@@ -834,7 +839,7 @@ def build_strategy_reflection_prompt(
         prompt_parts.append("=== PARENT SOLVER EXCERPTS ===")
         for i, parent in enumerate(parent_solvers):
             prompt_parts.append("Parent {}:".format(i + 1))
-            prompt_parts.append(shorten_text(parent, 7000))
+            prompt_parts.append(shorten_text(parent, 16000))
             prompt_parts.append("")
     return "\n".join(prompt_parts)
 
