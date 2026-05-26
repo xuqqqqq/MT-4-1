@@ -547,7 +547,6 @@ def solve(input_text: str) -> list:
                 single_task_indices.append(i)
         if len(single_task_indices) < 3:
             return result
-
         for i in range(len(single_task_indices)):
             for j in range(i + 1, len(single_task_indices)):
                 for k in range(j + 1, len(single_task_indices)):
@@ -608,6 +607,7 @@ def solve(input_text: str) -> list:
                     if not subsets_a or not subsets_b or not subsets_c:
                         continue
 
+                    found = False
                     for sub_a, pen_a in subsets_a:
                         set_a = set(sub_a)
                         for sub_b, pen_b in subsets_b:
@@ -624,9 +624,16 @@ def solve(input_text: str) -> list:
                                     result[idx_c] = (group_c, sub_c)
                                     assigned_couriers.clear()
                                     for _, couriers in result:
-                                        for c in couriers:
-                                            assigned_couriers.add(c)
-                                    return result
+                                        for cid in couriers:
+                                            assigned_couriers.add(cid)
+                                    found = True
+                                    break
+                            if found:
+                                break
+                        if found:
+                            break
+                    if found:
+                        return result
         return result
 
     def first_improvement_top20_triple(result, assigned_couriers, start_time, time_limit=9.5):
@@ -1065,6 +1072,69 @@ def solve(input_text: str) -> list:
                         if found:
                             break
 
+    def late_one_courier_transfer(result, assigned_couriers, start_time, time_limit=9.5):
+        n = len(result)
+        eligible = []
+        for idx in range(n):
+            group, couriers = result[idx]
+            if len(group.split(",")) == 1 and 1 <= len(couriers) <= 4:
+                cands = group_to_candidates[group]
+                selected = [(s, cid, w) for s, cid, w in cands if cid in couriers]
+                pen = expected_penalty(selected)
+                eligible.append((pen, idx, group, couriers))
+        if len(eligible) < 2:
+            return
+        eligible.sort(key=lambda x: x[0], reverse=True)
+        top24 = eligible[:24]
+        extra = [e for e in eligible if len(e[3]) >= 3 and e not in top24]
+        candidates_list = top24 + extra
+        seen = set()
+        unique_candidates = []
+        for e in candidates_list:
+            if e[1] not in seen:
+                seen.add(e[1])
+                unique_candidates.append(e)
+        for i in range(len(unique_candidates)):
+            if time.time() - start_time > time_limit:
+                return
+            src_idx = unique_candidates[i][1]
+            src_group, src_couriers = result[src_idx]
+            if len(src_couriers) < 2:
+                continue
+            src_cands = group_to_candidates[src_group]
+            for j in range(len(unique_candidates)):
+                if i == j:
+                    continue
+                tgt_idx = unique_candidates[j][1]
+                tgt_group, tgt_couriers = result[tgt_idx]
+                if len(tgt_couriers) >= 4:
+                    continue
+                tgt_cands = group_to_candidates[tgt_group]
+                for c in src_couriers:
+                    if c in tgt_couriers:
+                        continue
+                    has_c_in_tgt = any(cid == c for _, cid, _ in tgt_cands)
+                    if not has_c_in_tgt:
+                        continue
+                    old_src_sel = [(s, cid, w) for s, cid, w in src_cands if cid in src_couriers]
+                    old_tgt_sel = [(s, cid, w) for s, cid, w in tgt_cands if cid in tgt_couriers]
+                    old_pen = expected_penalty(old_src_sel) + expected_penalty(old_tgt_sel)
+                    new_src = [x for x in src_couriers if x != c]
+                    new_tgt = tgt_couriers + [c]
+                    new_src_sel = [(s, cid, w) for s, cid, w in src_cands if cid in new_src]
+                    new_tgt_sel = [(s, cid, w) for s, cid, w in tgt_cands if cid in new_tgt]
+                    if not new_src_sel or not new_tgt_sel:
+                        continue
+                    new_pen = expected_penalty(new_src_sel) + expected_penalty(new_tgt_sel)
+                    if new_pen < old_pen - 1e-7:
+                        result[src_idx] = (src_group, new_src)
+                        result[tgt_idx] = (tgt_group, new_tgt)
+                        assigned_couriers.clear()
+                        for _, couriers in result:
+                            for cid in couriers:
+                                assigned_couriers.add(cid)
+                        return
+
     start_time = time.time()
     result, assigned_couriers, assigned_tasks = solve_matching()
     result = cover_remaining_tasks(result, assigned_couriers, assigned_tasks)
@@ -1084,5 +1154,6 @@ def solve(input_text: str) -> list:
     anchor_pair_first_improvement(result, assigned_couriers, start_time, 9.5)
     final_top20_triple_4c(result, assigned_couriers, start_time, 9.5)
     high_courier_anchor_triple(result, assigned_couriers, start_time, 9.5)
+    late_one_courier_transfer(result, assigned_couriers, start_time, 9.5)
 
     return result
