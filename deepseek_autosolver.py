@@ -29,6 +29,7 @@ BASE_DIR = Path("outputs/deepseek_autosolver")
 STATE_PATH = BASE_DIR / "state.json"
 LOG_PATH = BASE_DIR / "log.jsonl"
 CANDIDATES_DIR = BASE_DIR / "candidates"
+REFLECTIONS_DIR = BASE_DIR / "reflections"
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 HACKATHON_LOGIN_URL = "https://hackathon.mykeeta.com/login"
 HACKATHON_JUDGE_URL = "https://hackathon.mykeeta.com/judge"
@@ -52,6 +53,7 @@ def ensure_dirs():
     """Create required directories."""
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     CANDIDATES_DIR.mkdir(parents=True, exist_ok=True)
+    REFLECTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_state() -> dict:
@@ -89,9 +91,12 @@ def write_file(path: Path, content: str):
 def read_text_arg(value):
     if not value:
         return ""
-    path = Path(value)
-    if path.exists() and path.is_file():
-        return read_file(path)
+    try:
+        path = Path(value)
+        if path.exists() and path.is_file():
+            return read_file(path)
+    except (OSError, ValueError):
+        pass
     return value
 
 
@@ -588,7 +593,9 @@ def build_generation_prompt(
         "The function should parse the input text (format described below) and return a list of tuples/lists.",
         "Each item must be a tuple/list `(task_id_list_string, courier_id_list)`.",
         "task_id_list_string must match an exact input TSV task_id_list value (e.g. 'T0000' or 'T0024,T0019').",
+        "Do not invent new merged task_id_list strings. A bundle can be used only when that exact task_id_list string already appears in the input for each selected courier.",
         "courier_id_list is a list/tuple of one or more courier IDs offered for that exact task group.",
+        "A courier ID may appear in at most one returned task group. Reusing a courier across groups is invalid and receives a duplicate-courier penalty.",
         "The input is TSV with columns: task_id_list, courier_id, total_score, willingness.",
         "The official baseline below is authoritative for parsing and return format, but you should improve it.",
         "Objective for one selected task group with several offered couriers:",
@@ -701,6 +708,110 @@ Use Python 3.6 standard library only. No dataclasses, walrus, or match/case.
     return prompt
 
 
+def build_strategy_reflection_prompt(
+    problem_info: str = "",
+    baseline_solver: str = "",
+    local_cases: List[Dict] = None,
+    population_summary: str = "",
+    previous_feedback: str = "",
+    parent_solvers: List[str] = None,
+) -> str:
+    """Build a strategy-only prompt so DeepSeek chooses the next mutation."""
+    prompt_parts = [
+        "You are the algorithm designer in an EOH/ReEvo-style hyper-heuristic loop.",
+        "Do NOT write solver code in this response.",
+        "Your job is to reflect on the MT-4 assignment problem and choose the next single code-generation direction.",
+        "",
+        "Contest solver constraints:",
+        "- Python 3.6 standard library only.",
+        "- The final generated solver must define solve(input_text: str) -> list.",
+        "- It must return exact input task_id_list strings paired with lists of courier IDs.",
+        "- It must not invent merged bundle strings; every returned task_id_list must already exist in the input TSV.",
+        "- A courier ID may appear in at most one returned task group; reusing a courier is invalid.",
+        "- It must be a general algorithm, not a memorized case answer.",
+        "- Do not rely on literal task IDs, courier IDs, or copied row tables.",
+        "- Runtime target is about 10 seconds per case.",
+        "",
+        "Objective for one selected group with multiple couriers:",
+        "miss = product(1 - willingness_i)",
+        "accept = 1 - miss",
+        "accepted_score = sum(w_i * score_i) / sum(w_i)",
+        "expected_penalty = accept * accepted_score + miss * 100 * bundle_size",
+        "Total objective also penalizes missing, duplicate, and invalid assignments.",
+        "",
+        "Important empirical memory from this DeepSeek branch:",
+        "- Official greedy baseline on large_seed301: about 2097.66.",
+        "- Earlier non-hardcoded DeepSeek solver on large_seed301 reached about 678.40.",
+        "- Use the population summary below as the source of truth for the current best score.",
+        "- The best solvers cover all 40 tasks with 80 valid offers and mostly single-task groups.",
+        "- Current best structure on large_seed301 is 40 selected groups / 80 courier offers: all selected groups are single-task bundles; offer counts are roughly thirty groups with 2 couriers, five with 3 couriers, and five with 1 courier.",
+        "- Therefore simple 'add a second courier' logic is already largely present; focus on different assignment/global-selection neighborhoods unless you can improve that phase concretely.",
+        "- Pair/matching/local-reassignment mutations recently regressed to roughly 696.99, 699.52, 838.21, 977.97, or worse.",
+        "- A generated solver with many literal T####/C#### IDs is rejected as case-specific.",
+        "",
+        "Think in terms of initialization, intensification, diversification, and neighborhood structure.",
+        "Explain why the current basin may be missing better task/courier combinations.",
+        "Then choose exactly one next operator for the generator to implement.",
+        "The chosen operator should be concrete enough to become a REGION SPECIALIZATION HINT.",
+        "",
+        "Return this exact structure:",
+        "1. Diagnosis:",
+        "2. Failed directions to avoid:",
+        "3. Three candidate next operators:",
+        "4. Chosen operator:",
+        "5. NEXT_GENERATION_HINT:",
+        "Put only the final actionable prompt text under NEXT_GENERATION_HINT.",
+        "",
+    ]
+    if problem_info:
+        prompt_parts.append("=== PROBLEM INFORMATION ===")
+        prompt_parts.append(problem_info)
+        prompt_parts.append("")
+    if baseline_solver:
+        prompt_parts.append("=== OFFICIAL BASELINE SOLVER ===")
+        prompt_parts.append(shorten_text(baseline_solver, 8000))
+        prompt_parts.append("")
+    if local_cases:
+        prompt_parts.append("=== LOCAL CASE SUMMARIES ===")
+        for i, case in enumerate(local_cases):
+            prompt_parts.append("Case {}:".format(i + 1))
+            prompt_parts.append("  Path: {}".format(case.get("path", "N/A")))
+            prompt_parts.append("  Rows: {}, tasks: {}, couriers: {}, task groups: {}".format(
+                case.get("rows", "N/A"),
+                case.get("tasks", "N/A"),
+                case.get("couriers", "N/A"),
+                case.get("task_groups", "N/A"),
+            ))
+            prompt_parts.append("  Avg willingness: {}".format(case.get("avg_willingness", "N/A")))
+            prompt_parts.append("  Score range: {} .. {}".format(case.get("min_score", "N/A"), case.get("max_score", "N/A")))
+            prompt_parts.append("  TSV preview:")
+            prompt_parts.append(case.get("preview", "N/A"))
+            prompt_parts.append("")
+    if population_summary:
+        prompt_parts.append("=== POPULATION SUMMARY ===")
+        prompt_parts.append(population_summary)
+        prompt_parts.append("")
+    if previous_feedback:
+        prompt_parts.append("=== LAST FEEDBACK ===")
+        prompt_parts.append(previous_feedback)
+        prompt_parts.append("")
+    if parent_solvers:
+        prompt_parts.append("=== PARENT SOLVER EXCERPTS ===")
+        for i, parent in enumerate(parent_solvers):
+            prompt_parts.append("Parent {}:".format(i + 1))
+            prompt_parts.append(shorten_text(parent, 7000))
+            prompt_parts.append("")
+    return "\n".join(prompt_parts)
+
+
+def extract_next_generation_hint(reflection):
+    marker = "NEXT_GENERATION_HINT:"
+    pos = reflection.find(marker)
+    if pos < 0:
+        return reflection.strip()
+    return reflection[pos + len(marker):].strip()
+
+
 # ---------------------------------------------------------------------------
 # Submission to hackathon
 # ---------------------------------------------------------------------------
@@ -755,6 +866,76 @@ def get_hackathon_result(job_id: str) -> Optional[Dict]:
 # ---------------------------------------------------------------------------
 # Main commands
 # ---------------------------------------------------------------------------
+def cmd_reflect(args):
+    """Ask DeepSeek for a strategy-only reflection and next hint."""
+    ensure_dirs()
+    state = load_state()
+
+    has_explicit_context = bool(args.problem_info or args.baseline_solver or args.case_file)
+    problem_info_arg = args.problem_info if args.problem_info else ("" if has_explicit_context else state.get("problem_info", ""))
+    baseline_solver_arg = args.baseline_solver if args.baseline_solver else ("" if has_explicit_context else state.get("baseline_solver", ""))
+    problem_info = read_text_arg(problem_info_arg)
+    baseline_solver = read_text_arg(baseline_solver_arg)
+
+    local_cases = state.get("local_cases", [])
+    case_files = args.case_file or ([] if has_explicit_context else state.get("case_files", []))
+    if case_files:
+        local_cases = []
+        for case_file in case_files:
+            local_cases.append(summarize_tsv_case(case_file, max_lines=args.case_lines))
+
+    parent_solvers = []
+    for parent_path in args.parent_solver or []:
+        parent_solvers.append(read_text_arg(parent_path))
+
+    prompt = build_strategy_reflection_prompt(
+        problem_info=problem_info,
+        baseline_solver=baseline_solver,
+        local_cases=local_cases,
+        population_summary=format_population_summary(state, max_items=args.population_items),
+        previous_feedback=state.get("last_feedback", ""),
+        parent_solvers=parent_solvers,
+    )
+
+    logger.info("Calling DeepSeek for strategy reflection...")
+    try:
+        reflection = call_deepseek(prompt, max_tokens=args.max_tokens)
+    except Exception as e:
+        logger.error("Reflection failed: {}".format(e))
+        return
+
+    hint = extract_next_generation_hint(reflection)
+    timestamp = int(time.time())
+    reflection_file = REFLECTIONS_DIR / "reflection_{}.txt".format(timestamp)
+    hint_file = REFLECTIONS_DIR / "hint_{}.txt".format(timestamp)
+    write_file(reflection_file, reflection)
+    write_file(hint_file, hint + "\n")
+
+    state["last_reflection"] = reflection
+    state["last_reflection_path"] = str(reflection_file)
+    state["last_region_hint"] = hint
+    state["last_region_hint_path"] = str(hint_file)
+    if args.problem_info:
+        state["problem_info"] = args.problem_info
+    if args.baseline_solver:
+        state["baseline_solver"] = args.baseline_solver
+    if args.case_file:
+        state["case_files"] = args.case_file
+    save_state(state)
+
+    append_log({
+        "event": "reflect",
+        "timestamp": timestamp,
+        "reflection": str(reflection_file),
+        "hint": str(hint_file),
+        "prompt_length": len(prompt),
+    })
+
+    print(reflection)
+    print("\nSaved reflection: {}".format(reflection_file))
+    print("Saved next hint: {}".format(hint_file))
+
+
 def cmd_generate(args):
     """Generate a new candidate solver using DeepSeek."""
     ensure_dirs()
@@ -789,7 +970,7 @@ def cmd_generate(args):
         evolution_mode=args.mode,
         population_summary=population_summary,
         parent_solvers=parent_solvers,
-        region_hint=args.region_hint or "",
+        region_hint=read_text_arg(args.region_hint or state.get("last_region_hint_path", "") or state.get("last_region_hint", "")),
     )
 
     logger.info("Calling DeepSeek to generate solver...")
@@ -1140,6 +1321,15 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command")
 
+    # Reflect
+    refl_parser = subparsers.add_parser("reflect", help="Ask DeepSeek for strategy reflection only")
+    refl_parser.add_argument("--problem-info", help="Problem description")
+    refl_parser.add_argument("--baseline-solver", help="Official baseline solver code")
+    refl_parser.add_argument("--parent-solver", action="append", help="Parent solver excerpt; may be repeated")
+    refl_parser.add_argument("--case-file", action="append", help="Official/local TSV case file; may be repeated")
+    refl_parser.add_argument("--case-lines", type=int, default=40, help="Preview lines per case sent to DeepSeek")
+    refl_parser.add_argument("--population-items", type=int, default=12, help="Population entries to summarize")
+
     # Generate
     gen_parser = subparsers.add_parser("generate", help="Generate a new candidate solver")
     gen_parser.add_argument("--problem-info", help="Problem description")
@@ -1194,7 +1384,9 @@ def main():
         return
 
     # Dispatch
-    if args.command == "generate":
+    if args.command == "reflect":
+        cmd_reflect(args)
+    elif args.command == "generate":
         cmd_generate(args)
     elif args.command == "evaluate":
         cmd_evaluate(args)
