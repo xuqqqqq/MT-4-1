@@ -151,6 +151,79 @@ def looks_case_hardcoded(code):
     return hardcode_literal_count(code) > 12
 
 
+def shorten_text(text, max_chars):
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    head = text[:max_chars // 2]
+    tail = text[-max_chars // 2:]
+    return head + "\n\n... [truncated] ...\n\n" + tail
+
+
+def format_population_summary(state, max_items=8):
+    population = state.get("population", [])
+    if not population:
+        return ""
+    rows = []
+    for i, item in enumerate(population[:max_items]):
+        rows.append(
+            "#{rank}: cost={cost:.6f}, covered={covered}/{total}, valid_pairs={pairs}, "
+            "hard_literals={lits}, mode={mode}, path={path}".format(
+                rank=i + 1,
+                cost=float(item.get("cost", 1e100)),
+                covered=item.get("covered_tasks", "?"),
+                total=item.get("total_tasks", "?"),
+                pairs=item.get("num_valid_pairs", "?"),
+                lits=item.get("hardcode_literals", "?"),
+                mode=item.get("mode", "?"),
+                path=item.get("path", "?"),
+            )
+        )
+        feedback = item.get("feedback", "")
+        if feedback:
+            rows.append("  note: {}".format(shorten_text(feedback, 500).replace("\n", " | ")))
+    return "\n".join(rows)
+
+
+def record_population_result(state, path, code, result, mode="", feedback=""):
+    entry = {
+        "timestamp": int(time.time()),
+        "path": path or state.get("last_candidate", ""),
+        "mode": mode or state.get("last_generation_mode", ""),
+        "cost": result.get("cost"),
+        "covered_tasks": result.get("covered_tasks"),
+        "total_tasks": result.get("total_tasks"),
+        "num_valid_pairs": result.get("num_valid_pairs"),
+        "num_invalid_pairs": result.get("num_invalid_pairs"),
+        "missing_count": len(result.get("missing_tasks", [])),
+        "duplicate_task_count": len(result.get("duplicate_tasks", [])),
+        "duplicate_courier_count": len(result.get("duplicate_couriers", [])),
+        "hardcode_literals": hardcode_literal_count(code),
+        "feedback": feedback,
+    }
+    population = []
+    for old in state.get("population", []):
+        if old.get("path") != entry["path"]:
+            population.append(old)
+    population.append(entry)
+
+    def rank_key(item):
+        violation = (
+            int(item.get("missing_count", 0))
+            + int(item.get("duplicate_task_count", 0))
+            + int(item.get("duplicate_courier_count", 0))
+            + int(item.get("num_invalid_pairs", 0))
+            + (1000 if int(item.get("hardcode_literals", 0)) > 12 else 0)
+        )
+        covered = -int(item.get("covered_tasks", 0) or 0)
+        cost = float(item.get("cost", 1e100) or 1e100)
+        return (violation, covered, cost)
+
+    population.sort(key=rank_key)
+    state["population"] = population[:40]
+
+
 def strip_code_fences(text):
     # If text contains fenced code blocks, return the largest python/plain block.
     # If no fence exists, remove leading/trailing whitespace and append newline.
@@ -498,6 +571,10 @@ def build_generation_prompt(
     seed_solver: str = "",
     local_cases: List[Dict] = None,
     previous_feedback: str = "",
+    evolution_mode: str = "reflect",
+    population_summary: str = "",
+    parent_solvers: List[str] = None,
+    region_hint: str = "",
 ) -> str:
     """Build prompt for DeepSeek to generate solver code."""
     prompt_parts = [
@@ -516,11 +593,20 @@ def build_generation_prompt(
         "The solver must be a general algorithm for arbitrary TSV input, not a case-specific answer.",
         "Do not hardcode task IDs, courier IDs, literal assignment tables, or any rows copied from examples.",
         "If the code contains many literals like T0001 or C0001, it is invalid.",
-        "Prefer a compact heuristic: parse rows, build bundle/courier candidates, greedy assignment, then add a few extra courier offers.",
+        "Prefer compact heuristics: parse rows, build bundle/courier candidates, greedy assignment, then add a few extra courier offers.",
         "Do not implement large class frameworks, long multi-opt local search, or thousands of lines of copied code.",
         "Do not copy a long seed solver verbatim. Use the official baseline for I/O and the seed as strategy inspiration.",
         "The returned code must be syntactically complete; do not stop mid-function.",
         "Output ONLY the raw Python code, no explanations or markdown.",
+        "",
+        "=== EVOLUTION MODE ===",
+        evolution_mode,
+        "Use this as an LLM hyper-heuristic step:",
+        "- init: create a compact baseline-improving heuristic.",
+        "- mutate: make one targeted algorithmic change to a parent.",
+        "- crossover: combine two parents' useful ideas without copying bulk code.",
+        "- reflect: use the population summary and feedback as verbal gradients.",
+        "- region: specialize for the stated input-region while remaining general.",
         "",
     ]
 
@@ -531,12 +617,29 @@ def build_generation_prompt(
 
     if seed_solver:
         prompt_parts.append("=== CURRENT STRONG SEED SOLVER ===")
-        prompt_parts.append(seed_solver)
+        prompt_parts.append(shorten_text(seed_solver, 12000))
         prompt_parts.append("")
 
     if baseline_solver:
         prompt_parts.append("=== OFFICIAL BASELINE SOLVER ===")
-        prompt_parts.append(baseline_solver)
+        prompt_parts.append(shorten_text(baseline_solver, 8000))
+        prompt_parts.append("")
+
+    if population_summary:
+        prompt_parts.append("=== POPULATION / EVALUATION MEMORY ===")
+        prompt_parts.append(population_summary)
+        prompt_parts.append("")
+
+    if parent_solvers:
+        prompt_parts.append("=== PARENT SOLVER EXCERPTS ===")
+        for i, parent in enumerate(parent_solvers):
+            prompt_parts.append("Parent {}:".format(i + 1))
+            prompt_parts.append(shorten_text(parent, 8000))
+            prompt_parts.append("")
+
+    if region_hint:
+        prompt_parts.append("=== REGION SPECIALIZATION HINT ===")
+        prompt_parts.append(region_hint)
         prompt_parts.append("")
 
     if local_cases:
@@ -658,6 +761,10 @@ def cmd_generate(args):
         for case_file in case_files:
             local_cases.append(summarize_tsv_case(case_file, max_lines=args.case_lines))
     previous_feedback = state.get("last_feedback", "")
+    parent_solvers = []
+    for parent_path in args.parent_solver or []:
+        parent_solvers.append(read_text_arg(parent_path))
+    population_summary = format_population_summary(state)
 
     prompt = build_generation_prompt(
         problem_info=problem_info,
@@ -665,6 +772,10 @@ def cmd_generate(args):
         seed_solver=seed_solver,
         local_cases=local_cases,
         previous_feedback=previous_feedback,
+        evolution_mode=args.mode,
+        population_summary=population_summary,
+        parent_solvers=parent_solvers,
+        region_hint=args.region_hint or "",
     )
 
     logger.info("Calling DeepSeek to generate solver...")
@@ -692,6 +803,7 @@ def cmd_generate(args):
     # Update state
     state["last_candidate"] = str(candidate_file)
     state["last_candidate_code"] = code
+    state["last_generation_mode"] = args.mode
     if args.problem_info:
         state["problem_info"] = args.problem_info
     if args.seed_solver:
@@ -700,6 +812,8 @@ def cmd_generate(args):
         state["baseline_solver"] = args.baseline_solver
     if args.case_file:
         state["case_files"] = args.case_file
+    if args.parent_solver:
+        state["parent_solvers"] = args.parent_solver
     state["generation_count"] = state.get("generation_count", 0) + 1
     save_state(state)
 
@@ -718,7 +832,9 @@ def cmd_evaluate(args):
     state = load_state()
 
     # Determine which code to evaluate
+    candidate_path = state.get("last_candidate", "")
     if args.code_file:
+        candidate_path = args.code_file
         code = read_file(Path(args.code_file))
     else:
         code = state.get("last_candidate_code")
@@ -780,6 +896,7 @@ def cmd_evaluate(args):
              result['duplicate_couriers'], result['invalid_pairs'])
     state["last_feedback"] = feedback
     state["last_evaluation"] = result
+    record_population_result(state, candidate_path, code, result, feedback=feedback)
     save_state(state)
 
     # Log
@@ -891,6 +1008,10 @@ def cmd_loop(args):
             seed_solver=read_text_arg(state.get("seed_solver", "")),
             local_cases=[summarize_tsv_case(path, max_lines=args.case_lines) for path in state.get("case_files", [])] or state.get("local_cases", []),
             previous_feedback=state.get("last_feedback", ""),
+            evolution_mode=args.mode,
+            population_summary=format_population_summary(state),
+            parent_solvers=[read_text_arg(path) for path in args.parent_solver or []],
+            region_hint=args.region_hint or "",
         )
         try:
             code = call_deepseek(prompt, max_tokens=args.max_tokens)
@@ -949,6 +1070,7 @@ def cmd_loop(args):
         ).format(iteration, result['cost'], result['missing_tasks'], result['duplicate_tasks'])
         state["last_feedback"] = feedback
         state["last_evaluation"] = result
+        record_population_result(state, str(candidate_file), code, result, mode="loop", feedback=feedback)
         save_state(state)
 
         append_log({
@@ -1009,6 +1131,9 @@ def main():
     gen_parser.add_argument("--problem-info", help="Problem description")
     gen_parser.add_argument("--baseline-solver", help="Official baseline solver code")
     gen_parser.add_argument("--seed-solver", help="Seed solver code excerpt")
+    gen_parser.add_argument("--parent-solver", action="append", help="Parent solver for mutation/crossover; may be repeated")
+    gen_parser.add_argument("--mode", choices=["init", "mutate", "crossover", "reflect", "region"], default="reflect", help="LLM evolution operator")
+    gen_parser.add_argument("--region-hint", help="Input region to specialize for while staying general")
     gen_parser.add_argument("--case-file", action="append", help="Official/local TSV case file; may be repeated")
     gen_parser.add_argument("--case-lines", type=int, default=80, help="Preview lines per case sent to DeepSeek")
 
@@ -1033,6 +1158,9 @@ def main():
     loop_parser.add_argument("--problem-info", help="Problem description")
     loop_parser.add_argument("--baseline-solver", help="Official baseline solver code")
     loop_parser.add_argument("--seed-solver", help="Seed solver code excerpt")
+    loop_parser.add_argument("--parent-solver", action="append", help="Parent solver for mutation/crossover; may be repeated")
+    loop_parser.add_argument("--mode", choices=["init", "mutate", "crossover", "reflect", "region"], default="reflect", help="LLM evolution operator")
+    loop_parser.add_argument("--region-hint", help="Input region to specialize for while staying general")
     loop_parser.add_argument("--case-file", action="append", help="Official/local TSV case file; may be repeated")
     loop_parser.add_argument("--case-lines", type=int, default=80, help="Preview lines per case sent to DeepSeek")
     loop_parser.add_argument("--max-iterations", type=int, default=10, help="Maximum iterations")
