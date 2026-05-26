@@ -44,6 +44,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+LAST_SOLVER_ERROR = ""
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +218,7 @@ def record_population_result(state, path, code, result, mode="", feedback=""):
         "duplicate_task_count": len(result.get("duplicate_tasks", [])),
         "duplicate_courier_count": len(result.get("duplicate_couriers", [])),
         "hardcode_literals": hardcode_literal_count(code),
+        "runtime_seconds": result.get("runtime_seconds"),
         "feedback": feedback,
     }
     population = []
@@ -523,6 +525,8 @@ def run_candidate_solver(code: str, input_text: str, timeout: int = 30) -> Optio
     Execute candidate solver code in a subprocess with timeout.
     Returns parsed solution list or None on failure.
     """
+    global LAST_SOLVER_ERROR
+    LAST_SOLVER_ERROR = ""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         solver_file = tmp_path / "solver.py"
@@ -556,17 +560,20 @@ except Exception as e:
             )
             stdout, stderr = proc.communicate(timeout=timeout)
             if proc.returncode != 0:
-                logger.error("Solver subprocess failed: {}".format(stderr.decode("utf-8")))
+                LAST_SOLVER_ERROR = stderr.decode("utf-8")
+                logger.error("Solver subprocess failed: {}".format(LAST_SOLVER_ERROR))
                 return None
             output = stdout.decode("utf-8").strip()
             if not output:
+                LAST_SOLVER_ERROR = "No output from solver"
                 logger.error("No output from solver")
                 return None
             result = json.loads(output)
             if isinstance(result, list):
                 return result
             else:
-                logger.error("Unexpected result format: {}".format(result))
+                LAST_SOLVER_ERROR = "Unexpected result format: {}".format(result)
+                logger.error(LAST_SOLVER_ERROR)
                 return None
         except subprocess.TimeoutExpired:
             try:
@@ -574,13 +581,16 @@ except Exception as e:
                 proc.communicate()
             except Exception:
                 pass
-            logger.error("Solver timed out after {}s".format(timeout))
+            LAST_SOLVER_ERROR = "Solver timed out after {}s".format(timeout)
+            logger.error(LAST_SOLVER_ERROR)
             return None
         except json.JSONDecodeError as e:
-            logger.error("Failed to parse solver output: {}".format(e))
+            LAST_SOLVER_ERROR = "Failed to parse solver output: {}".format(e)
+            logger.error(LAST_SOLVER_ERROR)
             return None
         except Exception as e:
-            logger.error("Unexpected error running solver: {}".format(e))
+            LAST_SOLVER_ERROR = "Unexpected error running solver: {}".format(e)
+            logger.error(LAST_SOLVER_ERROR)
             return None
 
 
@@ -1067,7 +1077,9 @@ def cmd_evaluate(args):
 
     # Run solver
     logger.info("Running candidate solver...")
+    start_time = time.time()
     solution = run_candidate_solver(code, tsv_content, timeout=args.timeout)
+    runtime_seconds = time.time() - start_time
 
     if solution is None:
         logger.error("Solver execution failed")
@@ -1075,9 +1087,11 @@ def cmd_evaluate(args):
             "Candidate failed on local evaluation.\n"
             "Case: {}\n"
             "Timeout limit: {} seconds\n"
+            "Runtime before failure: {:.3f} seconds\n"
             "Generation hint used:\n{}\n"
+            "Solver error:\n{}\n"
             "Result: solver execution failed or timed out before producing a legal list.\n"
-        ).format(args.tsv_file, args.timeout, state.get("last_region_hint", ""))
+        ).format(args.tsv_file, args.timeout, runtime_seconds, state.get("last_region_hint", ""), LAST_SOLVER_ERROR)
         state["last_feedback"] = failure_feedback
         state["last_evaluation"] = {
             "cost": None,
@@ -1102,7 +1116,7 @@ def cmd_evaluate(args):
         # Try repair if requested
         if args.repair:
             logger.info("Attempting repair...")
-            error_msg = "Solver execution failed or timed out"
+            error_msg = LAST_SOLVER_ERROR or "Solver execution failed or timed out"
             repair_prompt = build_repair_prompt(code, error_msg)
             try:
                 new_code = call_deepseek(repair_prompt, max_tokens=args.max_tokens)
@@ -1126,19 +1140,39 @@ def cmd_evaluate(args):
 
     # Evaluate
     result = evaluate_solution(tsv_content, solution)
+    result["runtime_seconds"] = runtime_seconds
     logger.info("Evaluation result: cost={:.2f}, covered={}/{}, missing={}, duplicates={}".format(
         result['cost'], result['covered_tasks'], result['total_tasks'],
         len(result['missing_tasks']), len(result['duplicate_tasks'])))
 
     # Update state with feedback
+    best_cost = None
+    for item in state.get("population", []):
+        value = item.get("cost")
+        if value is None:
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if best_cost is None or value < best_cost:
+            best_cost = value
+    delta_text = "N/A"
+    if best_cost is not None:
+        delta_text = "{:.6f}".format(result["cost"] - best_cost)
     feedback = (
         "Cost: {:.2f}\n"
+        "Exact cost: {:.12f}\n"
+        "Runtime: {:.3f} seconds\n"
+        "Current best before this evaluation: {}\n"
+        "Delta vs current best: {}\n"
         "Generation hint used:\n{}\n"
         "Missing tasks: {}\n"
         "Duplicate tasks: {}\n"
         "Duplicate couriers: {}\n"
         "Invalid pairs: {}\n"
-    ).format(result['cost'], state.get("last_region_hint", ""), result['missing_tasks'], result['duplicate_tasks'],
+    ).format(result['cost'], result['cost'], runtime_seconds, best_cost if best_cost is not None else "N/A", delta_text,
+             state.get("last_region_hint", ""), result['missing_tasks'], result['duplicate_tasks'],
              result['duplicate_couriers'], result['invalid_pairs'])
     state["last_feedback"] = feedback
     state["last_evaluation"] = result
