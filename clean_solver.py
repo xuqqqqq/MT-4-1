@@ -2108,10 +2108,81 @@ def local_repartition(problem, state, best_value, deadline):
                 current_value = value
                 improved = True
                 break
+
+        if not improved and time.perf_counter() < deadline:
+            for subset in related_repartition_subsets(problem, current, indices):
+                if expired(deadline):
+                    break
+                subset_deadline = min(deadline, time.perf_counter() + 0.05 + 0.02 * len(subset))
+                trial = best_repartition_for_subset(problem, current, subset, subset_deadline)
+                if trial is None:
+                    continue
+                value = evaluate_state(problem, trial)
+                if value + EPS < current_value:
+                    current = trial
+                    current_value = value
+                    improved = True
+                    break
         if not improved:
             break
 
     return current, current_value
+
+
+def related_repartition_subsets(problem, state, ranked):
+    owner = {}
+    for index, offers in enumerate(state):
+        for candidate in offers:
+            owner[candidate.courier] = index
+
+    subsets = []
+    seen = set()
+    roots = ranked[: min(22, len(ranked))]
+    for root in roots:
+        related = [root]
+        related_seen = {root}
+        cursor = 0
+        while cursor < len(related) and len(related) < 5:
+            index = related[cursor]
+            cursor += 1
+            for mask in repartition_neighbor_masks(problem, state[index][0].mask):
+                scanned = 0
+                for candidate in problem.by_mask.get(mask, ()):
+                    scanned += 1
+                    other = owner.get(candidate.courier)
+                    if other is not None and other not in related_seen:
+                        related_seen.add(other)
+                        related.append(other)
+                        if len(related) >= 5:
+                            break
+                    if scanned >= 80:
+                        break
+                if len(related) >= 5:
+                    break
+
+        for size in range(2, len(related) + 1):
+            subset = tuple(sorted(related[:size]))
+            if subset not in seen:
+                seen.add(subset)
+                subsets.append(subset)
+        if len(related) >= 5:
+            subset = tuple(sorted((related[0], related[1], related[2], related[4])))
+            if subset not in seen:
+                seen.add(subset)
+                subsets.append(subset)
+    return subsets
+
+
+def repartition_neighbor_masks(problem, mask):
+    masks = [mask]
+    if bit_count(mask) > 1:
+        seen = {mask}
+        for groups in enumerate_partitions(problem, mask):
+            for group in groups:
+                if group not in seen:
+                    seen.add(group)
+                    masks.append(group)
+    return masks
 
 
 def random_repartition(problem, state, best_value, deadline, seed):
